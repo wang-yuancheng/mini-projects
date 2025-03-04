@@ -22,7 +22,7 @@ body {
 }
 
 .gridItem {
-  background-color: #f0f0f0;
-  outline: 1px solid #a44141;
+  background-color: rgb(240, 240, 240);
+  outline: 1px solid #000000;
   box-sizing: border-box;
 }

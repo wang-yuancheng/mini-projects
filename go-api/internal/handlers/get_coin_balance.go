@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/gorilla/schema"
 	log "github.com/sirupsen/logrus"
-	"github.com/wang-yuancheng/go-api/api"
-	"github.com/wang-yuancheng/go-api/internal/tools"
+	"github.com/wang-yuancheng/mini-projects/go-api/api"
 	"github.com/wang-yuancheng/mini-projects/go-api/internal/tools"
+	"github.com/gorilla/schema"
 )
 
 func GetCoinBalance(w http.ResponseWriter, r *http.Request) {

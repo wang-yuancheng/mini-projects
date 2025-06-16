@@ -3,7 +3,7 @@ package handlers
 import (
 	"github.com/go-chi/chi"
 	chimiddle "github.com/go-chi/chi/middleware"
-	"github.com/wang-yuancheng/go-api/internal/middleware"
+	"github.com/wang-yuancheng/mini-projects/go-api/internal/middleware"
 )
 
 func Handler(r *chi.Mux) {

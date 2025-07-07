@@ -1,3 +1,13 @@
+import { Header } from "@/sections/Header";
+import { Hero } from "@/sections/Hero";
+import { LogoTicker } from "@/sections/LogoTicker";
+
 export default function Home() {
-  return <h1>Hello world</h1>;
+  return (
+    <>
+      <Header />
+      <Hero />
+      <LogoTicker />
+    </>
+  );
 }

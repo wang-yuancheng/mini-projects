@@ -21,3 +21,4 @@ A collection of small learning projects that I built. Each folder is a self-cont
 | 24 Aug 2025 | **pytorch-custom**          | Python, PyTorch           |
 | 4 Apr 2026  | **time-series-transformer** | Python, PyTorch           |
 | 24 Apr 2026 | **jax-tutorial**            | Python, JAX               |
+| 15 Aug 2026 | **oil-spill-detection**     | Python, PyTorch           |

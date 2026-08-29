@@ -1,7 +1,7 @@
 <img src="./assets/deepwater_horizon_oil_spill_may_24_2010.jpg" width="1000">
 
 # Paper List
-These papers below use the same general type of hyperspectral dataset (HOSD: 1, 2, 3. Similar but different world location: 4 ). The HOSD dataset is not a simulation (eg, the researchers mix their own oil in a lab). There are a few more papers that use hyperspectral cameras but are simulated (5, 6)
+These papers below use the same general type of hyperspectral dataset (HOSD: 1, 2, 3. Similar but different world location: 4). The HOSD dataset is not a simulation (eg, the researchers mix their own oil in a lab). There are a few more papers that use hyperspectral cameras but are simulated (5, 6)
 
 *Cited with APA 7*
 
@@ -55,7 +55,7 @@ Probability Estimation: "The isolation forest is employed to detect the probabil
 
 Pseudo-Label Generation: "...an efficient k-means algorithm is performed on the probability map $p$ to generate the training samples."
 
-Initial Classification: "1% of the whole training samples are randomly selected... The training set is fed into the SVM classifier to yield the initial detection map."
+Initial Classification: "1% of the whole training samples are randomly selected... The training set is fed into the SVM classifier to yield the initial detection map." Not all data is used because SVM is too slow to process the millions of free labels its algorithm generates.
 
 Spatial Optimization: "The ERW [extended random walker] algorithm is utilized to optimize the initial detection map by integrating the spatial information so as to produce the final result."
 
@@ -66,7 +66,6 @@ ROC Curve: The probability that a classifier will rank a randomly chosen positiv
 
 Precision: True positive rate over all positive predictions.
 
-
 #### Results
 "The satisfactory detection results obtained by the proposed method are mainly due to several reasons: First, the noisy band removal can effectively alleviate the interference of severe noisy bands to detection performance. This step is able to greatly boost the robustness of the proposed method. Second, the isolation forest method produces relatively true training samples, even though it does not involve human annotation. Third, the ERW-based optimization process takes full advantage of the spatial correlations among neighboring pixels. This optimization is beneficial for improving the detection accuracy."
 
@@ -75,8 +74,37 @@ Precision: True positive rate over all positive predictions.
 #### Ablations
 <img src="./assets/hosdablations.png" width="500">
 
-
 ## [2] Self-Supervised Spectral–Spatial Transformer Network for Hyperspectral Oil Spill Mapping
+This paper, though by the same authors of the main dataset, has a bit of a different goal. This time, it is multi-class classification (thick oil/thin oil/sheen/seawater) of the same type of data using the same sensor and same disaster (but not exact same dataset). They also mention that the main HOSD proposal paper has limitations of the method depending a lot on the selection of bands which are "often very complicated and time-consuming".
+
+#### Data Source
+Gulf of Mexico oil spill with AVIRIS sensor. NASA provided AVIRIS images. The spectral coverage is from 365nm to 2500nm. 8 images of 500 × 350 pixels. The spectral coverage is from 0.4 to 2.5 µm.
+
+#### Preprocessing
+The underlying HOSD images were previously converted to surface reflectance (using the FLAASH model) before any classification steps (though it is not mentioned in this specifc paper, the images look similar to [1]). There is more data augmentation (eg. adding noise, rotating images) in this paper. The goal is so that the transformer learns a better understanding of the data through a diverse data in the pretraining.
+
+No augmentation for non transformer models.
+
+Input Formatting:
+SVM: Ingests the data as individual 1D spectral pixel vectors (ignoring spatial surroundings).
+
+3DCNN & SSRN: Ingest the data as small 3D cropped spatial-spectral patches (cubes with a spatial window size of 11) to evaluate a pixel alongside its immediate neighbors.
+
+#### Training Method
+They use a complex set of Transformers which incur high computational costs that make it not suitable for our goal of a lighterweight model.
+
+#### Detection Metrics Used
+The relevant ones are Overall Accuracy (OA) which is just accuracy in binary classification, F1 Score, and they also use something called Kappa Coefficient which is for consistency testing to measure the performance of the classification (might not be relevant for us).
+
+#### Results 
+One good part of this paper is that it compares SVM / MSTV (traditional methods) vs various CNNs and their transformer. While the transformer obviously performed better, we see that the 3DCNN yields higher Overall Accuracy (93.49% vs. 92.97%) and Average Accuracy (83.35% vs. 80.51%) while SSRN yields a higher Kappa coefficient (72.81% vs. 69.20%) and F1 Score (83.33% vs. 82.59%). The MSTV is always better than SVM. Do note these might not translate for our task due to the inherent difference.
+
+<img src="./assets/hosdmultiresults.png" width="900">
+
+We also see that pre-training takes a lot of time, thought it does not really suggest a bigger model.
+
+<img src="./assets/hosdmulticomputetime.png" width="800">
+
 
 ## [3] Deep learning-based hyperspectral oil spill detection for marine pollution monitoring in the Gulf of Mexico: A step toward marine pollution monitoring and SDG 14 compliance
 
@@ -85,3 +113,8 @@ Precision: True positive rate over all positive predictions.
 ## [5] Hyperspectral technology for oil spills characterisation by using feature selection
 
 ## [6] Oil Spill Classification Using an Autoencoder and Hyperspectral Technology
+
+# Extra Information
+There are little publicly available datasets for hyperspectral imagery for oil spills. [show proof / metrics of search on nasa sites]. The authors of the HOSD dataset provides relatively clean data, where they [preprocessing methods]. The goal of the project is not to figure out the best way to clean raw data. The goal is to set a baseline of what is required to predict oil spill reliably on-board with a compressed model. We hence test different methods and compress them. We hope to provide insight into what models work better than others, and show its possible to compress the model on a FPGA and maintain high accuracy. That said, the limitation is indeed when deployed into the real world. Because we trained on level 2 data, external factors like sun glint, which are not in the original dataset are not part of the pipeline to be removed, say in a real onboard detection without transmitting the data to a ground station. FPGA would likely need more space so that this extra early processing can be done. 
+
+During prediction, we need to consider not just spectral data but also spatial data to give a more accurate prediction. The HOSD dataset provides both. If we do not consider spatial data, it give rise to noisy results [can show ablation of no spatial data consideration].

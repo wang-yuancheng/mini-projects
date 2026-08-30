@@ -108,13 +108,49 @@ We also see that pre-training takes a lot of time, thought it does not really su
 
 ## [3] Deep learning-based hyperspectral oil spill detection for marine pollution monitoring in the Gulf of Mexico: A step toward marine pollution monitoring and SDG 14 compliance
 
+
+
+
+
 ## [4] Hyperspectral Marine Oil Spill Monitoring Using a Dual-Branch Spatial–Spectral Fusion Model
+The paper aims to improve marine oil spill detection by accurately extracting the boundaries of oil-water interfaces which are often blurred by sunglints and shadows. This paper also used spaceborne data, which could be more noisy. The paper's method of fusing a Graph Convolutional Network (GCN) with a U-Net was said to have good results. It might be better for degraded images, meaning it might be overkill for out "good data"? Need to run tests.
+
+#### Data Source
+Completely different datasets than HOSD in terms of location (Bohai Sea and Yellow Sea in China). The spectral coverage is 2 sensors. Firstly, they got it from a Hyperion Spaceborne sensor, Liaodong Bay 2007, with spectral range of 400~2500 nm and with 242 bands. However, due to water vapor and noise, only 175 bands were actually usable. They also got it from a AISA+ airborne sensor, Penglai 2011 and Dalian Xingang 2010, with a narrower spectral range (400~970 nm) with 258 bands.
+
+The data is avaliable on request but we did not request it. It was not clear the contact information, but might be able to find if dug deeper.
+
+#### Training Method
+*It looks very complicated, because I do not have knowledge on GNNs/GCNs. Chat tells me its also very hard to implement on FPGAs, even harder than transformer, due to the graph part.*
+
+**Why a Graph Network?** Preventing Information Loss: "Traditional convolutional networks can cause information loss during the feature extraction process." Also, instead of scanning a square grid, the GCN branch groups the image into irregular "adjacent superpixel blocks." The graph architecture uses the spatial and spectral correlation between these blocks to "obtain the one to many relationship of features in the space." By defining the image as a set of vertices (superpixels) and edges (their relationships), the model creates an Adjacency Matrix. The authors state that normalizing this matrix yields "more robust graph structure data," which is highly effective at mapping the irregular, flowing shapes of oil spills and filtering out chaotic sunglints.
+
+#### Results
+It compares the proposed model against graph-based deep learning models (standard Graph Convolutional Network (GCN) and a CNN-Enhanced Graph Convolutional Network (CEGCN)). The proposed DUNET model outperformed both CEGCN and GCN across all datasets and metrics in getting good predictions on boundaries.
 
 ## [5] Hyperspectral technology for oil spills characterisation by using feature selection
 
 ## [6] Oil Spill Classification Using an Autoencoder and Hyperspectral Technology
 
 # Extra Information
+Report should mention frequency of oil spills, why we need to detect them fast. Can give recent examples of oil spill and the effects of it.
+Report should mention how detection of oil is currently done, how the proposed method (FPGA) is better.
+Mention the advantages and disadvantages of hyperspectral imagery over SAR images.
+
 There are little publicly available datasets for hyperspectral imagery for oil spills. [show proof / metrics of search on nasa sites]. The authors of the HOSD dataset provides relatively clean data, where they [preprocessing methods]. The goal of the project is not to figure out the best way to clean raw data. The goal is to set a baseline of what is required to predict oil spill reliably on-board with a compressed model. We hence test different methods and compress them. We hope to provide insight into what models work better than others, and show its possible to compress the model on a FPGA and maintain high accuracy. That said, the limitation is indeed when deployed into the real world. Because we trained on level 2 data, external factors like sun glint, which are not in the original dataset are not part of the pipeline to be removed, say in a real onboard detection without transmitting the data to a ground station. FPGA would likely need more space so that this extra early processing can be done. 
 
+Oil have different type of thickness. This project does not predict thickness and could be a limitation. Moreover, it does not tell you the type of oil, although that could likely be found more easily (eg just by asking what oil the tanks were holding).
+
 During prediction, we need to consider not just spectral data but also spatial data to give a more accurate prediction. The HOSD dataset provides both. If we do not consider spatial data, it give rise to noisy results [can show ablation of no spatial data consideration].
+
+They note that training on, say 1%-5% of data is enough to get accurate results [1, 2, 4]. The papers however, do not mention how they managed the class inbalancing. We will likely need to test this. 
+
+This project does not use spaceborn (like cubesat) due ot the lack of datasets and other reasons mentioned above.
+
+We shall try 3 different methods.
+
+1. Traditional  baseline [1]
+2. ViT [2]
+3. CNN [2,3]
+
+Skip the GNN unless someone wants. The rest can implement method [1] on the new dataset. Someone can start trying to learn how to do on fpga on dummy software or smt.

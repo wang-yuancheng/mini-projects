@@ -116,7 +116,7 @@ We also see that pre-training takes a lot of time, thought it does not really su
 The paper aims to improve marine oil spill detection by accurately extracting the boundaries of oil-water interfaces which are often blurred by sunglints and shadows. This paper also used spaceborne data, which could be more noisy. The paper's method of fusing a Graph Convolutional Network (GCN) with a U-Net was said to have good results. It might be better for degraded images, meaning it might be overkill for out "good data"? Need to run tests.
 
 #### Data Source
-Completely different datasets than HOSD in terms of location (Bohai Sea and Yellow Sea in China). The spectral coverage is 2 sensors. Firstly, they got it from a Hyperion Spaceborne sensor, Liaodong Bay 2007, with spectral range of 400~2500 nm and with 242 bands. However, due to water vapor and noise, only 175 bands were actually usable. They also got it from a AISA+ airborne sensor, Penglai 2011 and Dalian Xingang 2010, with a narrower spectral range (400~970 nm) with 258 bands.
+Completely different datasets than HOSD in terms of location (Bohai Sea and Yellow Sea in China). The spectral coverage is 2 sensors. Firstly, they got it from a Hyperion Spaceborne sensor, Liaodong Bay 2007, with spectral range of 400 to 2500 nm and with 242 bands. However, due to water vapor and noise, only 175 bands were actually usable. They also got it from a AISA+ airborne sensor, Penglai 2011 and Dalian Xingang 2010, with a narrower spectral range (400 to 970 nm) with 258 bands.
 
 The data is avaliable on request but we did not request it. It was not clear the contact information, but might be able to find if dug deeper.
 

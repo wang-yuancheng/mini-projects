@@ -107,13 +107,30 @@ We also see that pre-training takes a lot of time, thought it does not really su
 
 ## [3] Deep learning-based hyperspectral oil spill detection for marine pollution monitoring in the Gulf of Mexico: A step toward marine pollution monitoring and SDG 14 compliance
 
+#### Data Source
+HOSD Dataset
 
+#### Preprocessing
+PCA was applied to compress the 224 spectral bands down to 32 principal components.
 
+Data Augmentation: To standardize the input for the neural networks and artificially expand the small dataset, the images were cropped into 256 × 256 pixel patches. This expanded the dataset to 142 images.
 
+Filtering: Any image patches containing only complete darkness were discarded to optimize training efficiency.
 
+#### Training Method
+70% training and 30% testing split.
 
+Trained U-Net (~12.5M parameters) and DeepLabv3 (~26.8M parameters), both are CNNs.
 
+#### Detection Metrics Used
+Intersection over Union (IoU), F1-score, Precision, Recall.
 
+#### Results
+DeepLabv3 wins overall. IoU 57.86%, F1-score 73.30%, precision 78.64%. It excelled at minimizing false positives and accurately capturing the target area.
+
+U-Net IoU 53.00%, F1-score 69.32%. However, it demonstrated slightly better sensitivity in identifying true positive oil pixels, making it better suited for minimizing false negatives.
+
+Neither model achieved the precision of the unsupervised Isolation Forest from the original HOSD paper. However, this study showed that a PCA-to-Patch preprocessing pipeline makes heavy hyperspectral data highly compatible with normal deep learning segmentation architectures.
 
 ## [4] Hyperspectral Marine Oil Spill Monitoring Using a Dual-Branch Spatial–Spectral Fusion Model
 The paper aims to improve marine oil spill detection by accurately extracting the boundaries of oil-water interfaces which are often blurred by sunglints and shadows. This paper also used spaceborne data, which could be more noisy. The paper's method of fusing a Graph Convolutional Network (GCN) with a U-Net was said to have good results. It might be better for degraded images, meaning it might be overkill for out "good data"? Need to run tests.
@@ -172,12 +189,27 @@ They note that training on, say 1%-5% of data is enough to get accurate results 
 
 This project does not use spaceborn (like cubesat) due ot the lack of datasets and other reasons mentioned above.
 
-We shall try 3 different methods.
+# TODO
+Few methods:
+Logic: Remove noise > Dimensional Reduction > Traditional/Deep Learning Methods
+1. Remove noisy band (gaussian statistical method) > KPCA > Isolation Forest > K-Means > SVM > ERW [1] (Unsupervised)
+2. Remove noisy band (gaussian statistical method) > KPCA > Deep Learning Model (UNet) [3]
+3. Remove noisy band (gaussian statistical method) > KPCA > Deep Learning Model (DeepLabv3) [3]
+4. Remove noisy band (gaussian statistical method) > KPCA > Deep Learning Model (ViT) (likely hard for fpga) [2]
+5. Remove noisy band (gaussian statistical method) > Autoencoder (the autoencoder layers can be mlp / cnn / se-cnn etc.) [Anomaly Detection, no paper i think]
 
-1. Traditional  baseline [1]
-2. ViT [2]
-3. CNN [2,3]
+Metrics to report:
+AUC, Precision, Recall, Accuracy, F1-Score
 
-Skip the GNN unless someone wants. The rest can implement method [1] on the new dataset. Someone can start trying to learn how to do on fpga on dummy software or smt.
+
+Note:
+1. Skip the GNN and possibly skip the transformer (fpga hard to implement apparently due to memory bandwidth and many other factors...). 
+2. Run method [1] on the new dataset. 
+3. Someone can start trying to learn how to do on fpga on dummy software or smt.
+4. Can try to use 50-50 class balance to train. Can standardize 256 × 256 pixel patches for those doing CNN/ViT data augmentation. 
 
 Ideally we have a similar dataset on a different location.
+
+Detection methods
+1. Anomaly detection (via reconstruction error)
+2. Binary classification 

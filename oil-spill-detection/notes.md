@@ -17,7 +17,6 @@ These papers below use the same general type of hyperspectral dataset (HOSD: 1, 
 
 [6] Carrasco-García, M. G., Rodríguez-García, M. I., Ruíz-Aguilar, J. J., Deka, L., Elizondo, D., & Turias Domínguez, I. J. (2024). Oil spill classification using an autoencoder and hyperspectral technology. Journal of Marine Science and Engineering, 12(3), 495.
 
-
 ## [1] Hyperspectral Remote Sensing Benchmark Database for Oil Spill Detection with an Isolation Forest-Guided Unsupervised Detector
 This paper is the source of our main HOSD dataset. They wanted to develop a way to generate accurate ground truth samples for oil spill because manual labelling requires a lot of effort. To be able to compare their labelling method, they had "field experts" label "pixel by pixel" using Environment for Visualizing Images (ENVI) software. In the end, they showed their unsupervised oil spill detection method that uses "both the spectral and spatial information of oil spill regions" to automatically generate training samples for the spectral classifier.
 
@@ -112,6 +111,10 @@ We also see that pre-training takes a lot of time, thought it does not really su
 
 
 
+
+
+
+
 ## [4] Hyperspectral Marine Oil Spill Monitoring Using a Dual-Branch Spatial–Spectral Fusion Model
 The paper aims to improve marine oil spill detection by accurately extracting the boundaries of oil-water interfaces which are often blurred by sunglints and shadows. This paper also used spaceborne data, which could be more noisy. The paper's method of fusing a Graph Convolutional Network (GCN) with a U-Net was said to have good results. It might be better for degraded images, meaning it might be overkill for out "good data"? Need to run tests.
 
@@ -129,8 +132,30 @@ The data is avaliable on request but we did not request it. It was not clear the
 It compares the proposed model against graph-based deep learning models (standard Graph Convolutional Network (GCN) and a CNN-Enhanced Graph Convolutional Network (CEGCN)). The proposed DUNET model outperformed both CEGCN and GCN across all datasets and metrics in getting good predictions on boundaries.
 
 ## [5] Hyperspectral technology for oil spills characterisation by using feature selection
+The researchers wanted to understand how different oil-and-water mixtures look like through a hyperspectral lens. They also wanted to simplify this data so as to identify which specific wavelengths of light actually matter for detecting oil.
+
+#### Data Source
+They used a spectroradiometer which provided a 1D spectrum (the camera captures for a point instead of a patch) for experiment. Spectral coverage: 350 – 2500 nm with 2,150 bands. 
+The results look a bit shallow to me, it is too simple of a project. They just show that big hyperspectral files can be aggressively compressed into lightweight models without losing much accuracies on their "easier" data.
+
+#### Training Method
+They used PCA to shrink 2,150 bands down to just 3, while still retaining 80% of the original information.
+They then plot the data on a 3D graph, where clear, distinct clusters naturally formed for plain water, pure oil, and the water-oil boundaries.
+
+#### Results
+The visible light range (449–549 nm) and the infrared region (past 750 nm) were the most critical wavelengths for telling water and oil apart.
 
 ## [6] Oil Spill Classification Using an Autoencoder and Hyperspectral Technology
+Building on [5], they wanted to completely automate the detection process using Machine Learning. They tested different levels of data compression using Autoencoders to find the absolute minimum amount of data a computer needs to reliably tell the difference between clean water and water polluted by three specific oils (diesel, C10, and fuel oil).
+
+#### Data Source
+Also simulation like [5].
+
+#### Training Method
+They successfully trained Autoencoders to compress the massive hyperspectral signatures into tiny packages ranging from 1 to 15 variables.
+
+#### Results
+After rigorous statistical testing, they found the best spot to be 6 variables. Feeding this data into a decision tree, it achieved 98.8% accuracy, misclassifying only a single sample out of 84.
 
 # Extra Information
 Report should mention frequency of oil spills, why we need to detect them fast. Can give recent examples of oil spill and the effects of it.
@@ -154,3 +179,5 @@ We shall try 3 different methods.
 3. CNN [2,3]
 
 Skip the GNN unless someone wants. The rest can implement method [1] on the new dataset. Someone can start trying to learn how to do on fpga on dummy software or smt.
+
+Ideally we have a similar dataset on a different location.

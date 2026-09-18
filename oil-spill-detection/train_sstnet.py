@@ -13,6 +13,8 @@ from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_sco
 from scipy.ndimage import convolve, binary_dilation
 from tqdm.auto import tqdm
 from functools import partial
+
+# Disable tqdm progress bars to keep the nohup.out log file clean
 tqdm = partial(tqdm, disable=True)
 
 # Force matplotlib to run headlessly without a display
@@ -39,7 +41,7 @@ def evaluate_band_retention(train_files):
     mask = np.array([[1, -2,  1], [-2, 4, -2], [1, -2,  1]], dtype=float)
     all_scores = []
     
-    for file_path in tqdm(train_files, desc="Evaluating Spectral Noise"):
+    for file_path in train_files:
         img = sio.loadmat(file_path)["img"]
         H, W, _ = img.shape
         scores = []
@@ -58,6 +60,7 @@ def evaluate_band_retention(train_files):
     clean_bands = np.sort([valid_bands[i] for i in clean_indices]).tolist()
     return clean_bands
 
+print("Evaluating clean bands...")
 CLEAN_BANDS = evaluate_band_retention(train_files)
 print(f"Retained strictly {len(CLEAN_BANDS)} bands.")
 
@@ -69,7 +72,7 @@ class HSIPatchDataset(Dataset):
         self.items = []
         pad = patch_size // 2
         
-        for idx, file_path in enumerate(tqdm(file_list, desc="Mining Full Dataset")):
+        for idx, file_path in enumerate(file_list):
             mat = sio.loadmat(file_path)
             img = mat["img"][:, :, clean_bands].astype(np.float32)
             img = (img - np.min(img)) / (np.max(img) - np.min(img) + 1e-8)
@@ -110,6 +113,7 @@ class HSIPatchDataset(Dataset):
         patch_tensor = torch.from_numpy(patch.copy().transpose(2, 0, 1))
         return patch_tensor, torch.tensor(label, dtype=torch.float32)
 
+print("Mining dataset patches...")
 train_dataset = HSIPatchDataset(train_files, CLEAN_BANDS, augment=True)
 val_dataset = HSIPatchDataset(test_files, CLEAN_BANDS, augment=False)
 train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=0)
@@ -215,38 +219,41 @@ class MoCo(nn.Module):
         return logits, labels
 
 # ==========================================
-# 3. STAGE 1: MOCO PRETRAINING
+# 3. STAGE 1: MOCO PRETRAINING (WITH IF/ELSE)
 # ==========================================
-PRETRAIN_EPOCHS = 200
-moco_train_loader = DataLoader(MoCoDataset(train_dataset), batch_size=256, shuffle=True, num_workers=0, drop_last=True)
+PRETRAIN_EPOCHS = 40
+PRETRAINED_WEIGHTS_PATH = "moco_pretrained_sstnet.pth"
+
 moco_model = MoCo(True_SSTNet, in_bands=len(CLEAN_BANDS)).to(device)
 
-criterion_moco = nn.CrossEntropyLoss()
-optimizer_moco = torch.optim.AdamW(moco_model.parameters(), lr=3e-4, weight_decay=1e-4)
+if os.path.exists(PRETRAINED_WEIGHTS_PATH):
+    print(f"\n--- Found '{PRETRAINED_WEIGHTS_PATH}' ---")
+    print("Skipping Stage 1 Pretraining. Loading existing weights...")
+    moco_model.load_state_dict(torch.load(PRETRAINED_WEIGHTS_PATH, map_location=device))
+else:
+    print(f"\n--- Starting Stage 1: MoCo Pretraining ({PRETRAIN_EPOCHS} Epochs) ---")
+    moco_train_loader = DataLoader(MoCoDataset(train_dataset), batch_size=256, shuffle=True, num_workers=0, drop_last=True)
+    criterion_moco = nn.CrossEntropyLoss()
+    optimizer_moco = torch.optim.AdamW(moco_model.parameters(), lr=3e-4, weight_decay=1e-4)
 
-print(f"--- Starting Stage 1: MoCo Pretraining ({PRETRAIN_EPOCHS} Epochs) ---")
-for epoch in range(PRETRAIN_EPOCHS):
-    moco_model.train()
-    total_loss = 0.0 # Added to track average loss
-    
-    pbar = tqdm(moco_train_loader, desc=f"MoCo Epoch {epoch+1}/{PRETRAIN_EPOCHS}")
-    for im_q, im_k in pbar:
-        im_q, im_k = im_q.to(device), im_k.to(device)
-        optimizer_moco.zero_grad()
-        logits, labels = moco_model(im_q, im_k)
-        loss = criterion_moco(logits, labels)
-        loss.backward()
-        optimizer_moco.step()
+    for epoch in range(PRETRAIN_EPOCHS):
+        moco_model.train()
+        total_loss = 0.0
         
-        total_loss += loss.item() # Add batch loss to total
-        pbar.set_postfix({'contrastive_loss': f"{loss.item():.4f}"})
-        
-    # Added standard print statement for the log file
-    avg_loss = total_loss / len(moco_train_loader)
-    print(f"MoCo Epoch {epoch+1}/{PRETRAIN_EPOCHS} | Avg Contrastive Loss: {avg_loss:.4f}")
+        for im_q, im_k in moco_train_loader:
+            im_q, im_k = im_q.to(device), im_k.to(device)
+            optimizer_moco.zero_grad()
+            logits, labels = moco_model(im_q, im_k)
+            loss = criterion_moco(logits, labels)
+            loss.backward()
+            optimizer_moco.step()
+            total_loss += loss.item()
+            
+        avg_loss = total_loss / len(moco_train_loader)
+        print(f"MoCo Epoch {epoch+1}/{PRETRAIN_EPOCHS} | Avg Contrastive Loss: {avg_loss:.4f}")
 
-torch.save(moco_model.state_dict(), "moco_pretrained_sstnet.pth")
-print("Stage 1 complete. Saved weights to moco_pretrained_sstnet.pth")
+    torch.save(moco_model.state_dict(), PRETRAINED_WEIGHTS_PATH)
+    print(f"Stage 1 complete. Saved weights to {PRETRAINED_WEIGHTS_PATH}")
 
 # ==========================================
 # 4. STAGE 2: FOCAL LOSS FINE-TUNING
@@ -266,34 +273,37 @@ class BinaryFocalLoss(nn.Module):
 
 criterion = BinaryFocalLoss(gamma=2.0, alpha=0.5) 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
-FINETUNE_EPOCHS = 30 # Bumped to 30 for an overnight run
+FINETUNE_EPOCHS = 30 
 
-print(f"--- Starting Stage 2: Supervised Fine-Tuning ({FINETUNE_EPOCHS} Epochs) ---")
+print(f"\n--- Starting Stage 2: Supervised Fine-Tuning ({FINETUNE_EPOCHS} Epochs) ---")
 for epoch in range(FINETUNE_EPOCHS):
     model.train()
     total_loss = 0.0
-    pbar = tqdm(train_loader, desc=f"Fine-Tuning Epoch {epoch+1}/{FINETUNE_EPOCHS}")
-    for X, y in pbar:
+    for X, y in train_loader:
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
-        loss = criterion(model(X), y)
+        
+        # FIX: Flatten model output from [256, 1] to [256]
+        logits = model(X).squeeze(1)
+        loss = criterion(logits, y)
+        
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        pbar.set_postfix({'loss': f"{loss.item():.4f}"})
         
     model.eval()
     all_preds, all_targets = [], []
     with torch.inference_mode():
         for X, y in val_loader:
-            probs = torch.sigmoid(model(X.to(device))).cpu().numpy()
+            # FIX: Flatten model output here too
+            probs = torch.sigmoid(model(X.to(device)).squeeze(1)).cpu().numpy()
             all_preds.extend(probs)
             all_targets.extend(y.numpy())
             
     preds_binary = (np.array(all_preds) > 0.5).astype(int)
     auc = roc_auc_score(all_targets, all_preds)
     f1 = f1_score(all_targets, preds_binary)
-    print(f"Epoch {epoch+1} | Train Loss: {total_loss/len(train_loader):.4f} | AUC: {auc:.4f} | F1: {f1:.4f}")
+    print(f"Epoch {epoch+1}/{FINETUNE_EPOCHS} | Train Loss: {total_loss/len(train_loader):.4f} | AUC: {auc:.4f} | F1: {f1:.4f}")
 
 torch.save(model.state_dict(), "finetuned_sstnet.pth")
 print("Stage 2 complete. Saved final weights to finetuned_sstnet.pth")
@@ -344,17 +354,33 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     batch_size = 512 
     model.eval()
     with torch.inference_mode():
-        for i in tqdm(range(0, len(valid_coords), batch_size), desc=f"Inferring {file_path.stem}"):
+        # Iterate over batches using range without tqdm to keep logs clean
+        for i in range(0, len(valid_coords), batch_size):
             batch_coords = valid_coords[i:i+batch_size]
             batch = [img_padded[r:r+patch_size, c:c+patch_size, :].transpose(2, 0, 1) for r, c in batch_coords]
             batch_tensor = torch.tensor(np.array(batch), dtype=torch.float32).to(device)
-            probs = torch.sigmoid(model(batch_tensor)).cpu().numpy()
+            
+            # FIX: Flatten model output here too
+            probs = torch.sigmoid(model(batch_tensor).squeeze(1)).cpu().numpy()
+            
             for (r, c), prob in zip(batch_coords, probs):
                 raw_prob_map[r, c] = prob
 
+    print(f"Applying Extended Random Walker Optimization on {file_path.stem}...")
     optimized_probs = apply_erw_optimization(raw_prob_map, rgb_img)
-    predictions = (optimized_probs > 0.35).astype(int) # Lowered threshold for higher recall
+    predictions = (optimized_probs > 0.35).astype(int) 
     
+    # Calculate full-scene metrics
+    all_probs = [optimized_probs[r, c] for r, c in valid_coords]
+    all_targets = [gt[r, c] for r, c in valid_coords]
+    preds_binary = (np.array(all_probs) > 0.35).astype(int)
+    auc = roc_auc_score(all_targets, all_probs)
+    precision = precision_score(all_targets, preds_binary, zero_division=0)
+    recall = recall_score(all_targets, preds_binary, zero_division=0)
+    f1 = f1_score(all_targets, preds_binary, zero_division=0)
+    print(f"--- Full Scene Metrics for {file_path.stem} ---")
+    print(f"AUC: {auc:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1: {f1:.4f}\n")
+
     fig, axs = plt.subplots(1, 3, figsize=(18, 8))
     axs[0].imshow(rgb_img)
     axs[0].set_title(f"False-Color RGB ({file_path.stem})")
@@ -370,7 +396,7 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     plt.close(fig) 
     print(f"Saved prediction image to {output_filename}")
 
-print("Processing final evaluations...")
+print("\n--- Processing final evaluations ---")
 for test_file in test_files:
     plot_full_scene(model, test_file, CLEAN_BANDS, device)
 

@@ -95,7 +95,13 @@ class HSIPatchDataset(Dataset):
             
             np.random.shuffle(hard_water_coords)
             np.random.shuffle(easy_water_coords)
-            water_sampled = np.vstack((hard_water_coords, easy_water_coords))[:n_oil]
+            
+            # FIX: Force the model to see open water by splitting the negative class
+            half_oil = n_oil // 2
+            water_sampled = np.vstack((
+                hard_water_coords[:half_oil], 
+                easy_water_coords[:(n_oil - half_oil)]
+            ))
             
             for r, c in oil_coords: self.items.append((idx, r, c, 1.0))
             for r, c in water_sampled: self.items.append((idx, r, c, 0.0))
@@ -283,7 +289,6 @@ for epoch in range(FINETUNE_EPOCHS):
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
         
-        # FIX: Flatten model output from [256, 1] to [256]
         logits = model(X).squeeze(1)
         loss = criterion(logits, y)
         
@@ -295,7 +300,6 @@ for epoch in range(FINETUNE_EPOCHS):
     all_preds, all_targets = [], []
     with torch.inference_mode():
         for X, y in val_loader:
-            # FIX: Flatten model output here too
             probs = torch.sigmoid(model(X.to(device)).squeeze(1)).cpu().numpy()
             all_preds.extend(probs)
             all_targets.extend(y.numpy())
@@ -368,12 +372,13 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
 
     print(f"Applying Extended Random Walker Optimization on {file_path.stem}...")
     optimized_probs = apply_erw_optimization(raw_prob_map, rgb_img)
-    predictions = (optimized_probs > 0.35).astype(int) 
+    predictions = (optimized_probs > 0.50).astype(int) 
     
     # Calculate full-scene metrics
     all_probs = [optimized_probs[r, c] for r, c in valid_coords]
     all_targets = [gt[r, c] for r, c in valid_coords]
-    preds_binary = (np.array(all_probs) > 0.35).astype(int)
+    preds_binary = (np.array(all_probs) > 0.50).astype(int)
+
     auc = roc_auc_score(all_targets, all_probs)
     precision = precision_score(all_targets, preds_binary, zero_division=0)
     recall = recall_score(all_targets, preds_binary, zero_division=0)

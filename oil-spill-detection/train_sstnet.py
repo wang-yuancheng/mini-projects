@@ -75,7 +75,14 @@ class HSIPatchDataset(Dataset):
         for idx, file_path in enumerate(file_list):
             mat = sio.loadmat(file_path)
             img = mat["img"][:, :, clean_bands].astype(np.float32)
-            img = (img - np.min(img)) / (np.max(img) - np.min(img) + 1e-8)
+            
+            # img = (img - np.min(img)) / (np.max(img) - np.min(img) + 1e-8) # This is a mistake, dont use min max
+
+            for b in range(img.shape[2]):
+                band = img[:, :, b]
+                p_low, p_high = np.percentile(band, (1, 99))
+                img[:, :, b] = np.clip((band - p_low) / (p_high - p_low + 1e-8), 0, 1)
+                
             img_padded = np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode='symmetric')
             self.arrays.append(img_padded)
             
@@ -262,52 +269,55 @@ else:
     print(f"Stage 1 complete. Saved weights to {PRETRAINED_WEIGHTS_PATH}")
 
 # ==========================================
-# 4. STAGE 2: FOCAL LOSS FINE-TUNING
+# 4. STAGE 2: BCE FINE-TUNING
 # ==========================================
 model = moco_model.encoder_q
 model.classifier[3] = nn.Linear(64, 1).to(device)
 
-class BinaryFocalLoss(nn.Module):
-    def __init__(self, gamma=2.0, alpha=0.5):
-        super().__init__()
-        self.gamma, self.alpha = gamma, alpha
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
-    def forward(self, logits, targets):
-        bce_loss = self.bce(logits, targets)
-        pt = torch.exp(-bce_loss)
-        return (self.alpha * (1 - pt) ** self.gamma * bce_loss).mean()
-
-criterion = BinaryFocalLoss(gamma=2.0, alpha=0.5) 
+# FIX 1: Swapped to standard BCE for stable 50/50 balanced training
+criterion = nn.BCEWithLogitsLoss() 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
 FINETUNE_EPOCHS = 30 
 
 print(f"\n--- Starting Stage 2: Supervised Fine-Tuning ({FINETUNE_EPOCHS} Epochs) ---")
 for epoch in range(FINETUNE_EPOCHS):
     model.train()
-    total_loss = 0.0
+    total_train_loss = 0.0
     for X, y in train_loader:
         X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
-        
         logits = model(X).squeeze(1)
         loss = criterion(logits, y)
-        
         loss.backward()
         optimizer.step()
-        total_loss += loss.item()
+        total_train_loss += loss.item()
         
     model.eval()
+    total_val_loss = 0.0
     all_preds, all_targets = [], []
     with torch.inference_mode():
         for X, y in val_loader:
-            probs = torch.sigmoid(model(X.to(device)).squeeze(1)).cpu().numpy()
+            X, y = X.to(device), y.to(device)
+            logits = model(X).squeeze(1)
+            
+            # Calculate validation loss
+            val_loss = criterion(logits, y)
+            total_val_loss += val_loss.item()
+            
+            probs = torch.sigmoid(logits).cpu().numpy()
             all_preds.extend(probs)
-            all_targets.extend(y.numpy())
+            all_targets.extend(y.cpu().numpy())
             
     preds_binary = (np.array(all_preds) > 0.5).astype(int)
     auc = roc_auc_score(all_targets, all_preds)
-    f1 = f1_score(all_targets, preds_binary)
-    print(f"Epoch {epoch+1}/{FINETUNE_EPOCHS} | Train Loss: {total_loss/len(train_loader):.4f} | AUC: {auc:.4f} | F1: {f1:.4f}")
+    f1 = f1_score(all_targets, preds_binary, zero_division=0)
+    precision = precision_score(all_targets, preds_binary, zero_division=0)
+    recall = recall_score(all_targets, preds_binary, zero_division=0)
+    
+    avg_train_loss = total_train_loss / len(train_loader)
+    avg_val_loss = total_val_loss / len(val_loader)
+    
+    print(f"Epoch {epoch+1}/{FINETUNE_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | AUC: {auc:.4f} | F1: {f1:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f}")
 
 torch.save(model.state_dict(), "finetuned_sstnet.pth")
 print("Stage 2 complete. Saved final weights to finetuned_sstnet.pth")
@@ -343,14 +353,20 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     rgb_img = np.zeros_like(rgb_clean)
     for c in range(3):
         channel = rgb_clean[:, :, c]
-        p_low, p_high = np.percentile(channel[channel > 0], (2, 98))
+        p_low, p_high = np.percentile(channel[channel > 0], (1, 99))
         rgb_img[:, :, c] = np.clip((channel - p_low) / (p_high - p_low + 1e-8), 0, 1)
         
     img_clean = img[:, :, clean_bands].astype(np.float32)
-    img_clean = (img_clean - np.min(img_clean)) / (np.max(img_clean) - np.min(img_clean) + 1e-8)
+    
+    # Apply the (1, 99) percentile scaling for test scenes
+    for b in range(img_clean.shape[2]):
+        band = img_clean[:, :, b]
+        p_low, p_high = np.percentile(band, (1, 99))
+        img_clean[:, :, b] = np.clip((band - p_low) / (p_high - p_low + 1e-8), 0, 1)
+        
     pad = patch_size // 2
     img_padded = np.pad(img_clean, ((pad, pad), (pad, pad), (0, 0)), mode='symmetric')
-    
+
     H, W = gt.shape
     raw_prob_map = np.zeros((H, W))
     valid_coords = [(r, c) for r in range(H) for c in range(W) if gt[r, c] >= 0]
@@ -373,6 +389,10 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     print(f"Applying Extended Random Walker Optimization on {file_path.stem}...")
     optimized_probs = apply_erw_optimization(raw_prob_map, rgb_img)
     predictions = (optimized_probs > 0.50).astype(int) 
+
+    # FIX: Mask out the invalid background swath so ERW doesn't hallucinate
+    valid_mask = (gt >= 0)
+    predictions = (optimized_probs > 0.50).astype(int) * valid_mask
     
     # Calculate full-scene metrics
     all_probs = [optimized_probs[r, c] for r, c in valid_coords]

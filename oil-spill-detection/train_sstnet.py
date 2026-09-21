@@ -32,37 +32,48 @@ print(f"Executing on device: {device}")
 train_files = [f for f in DATA_DIR.glob("*.mat") if f.stem not in ["GM01", "GM02"]]
 test_files = [f for f in DATA_DIR.glob("*.mat") if f.stem in ["GM01", "GM02"]]
 
-def evaluate_band_retention(train_files):
+def evaluate_band_retention_dynamic(all_files):
+    print("Evaluating clean bands across ALL datasets to eliminate sun glint...")
+    # Drop known atmospheric water vapor bands first
     water_vapor_bands = set(list(range(104, 114)) + list(range(148, 168)) + list(range(221, 224)))
-    sample_img = sio.loadmat(train_files[0])["img"]
+    sample_img = sio.loadmat(all_files[0])["img"]
     total_raw_bands = sample_img.shape[2]
     
     valid_bands = [b for b in range(total_raw_bands) if b not in water_vapor_bands]
     mask = np.array([[1, -2,  1], [-2, 4, -2], [1, -2,  1]], dtype=float)
     all_scores = []
     
-    for file_path in train_files:
+    for file_path in all_files:
         img = sio.loadmat(file_path)["img"]
         H, W, _ = img.shape
         scores = []
         for b in valid_bands:
-            total_noise = 0.0
-            for r in range(1, H - 1, 64):
-                end = min(r + 64, H - 1)
-                stripe = img[r-1:end+1, :, b].astype(float)
-                total_noise += np.abs(convolve(stripe, mask)[1:-1, 1:-1]).sum()
-            sigma_n = total_noise * np.sqrt(np.pi / 2) / (6 * (H - 2) * (W - 2))
+            band_data = img[:, :, b].astype(float)
+            
+            # Apply (1, 99) percentile scaling BEFORE noise calculation
+            p_low, p_high = np.percentile(band_data, (1, 99))
+            band_norm = np.clip((band_data - p_low) / (p_high - p_low + 1e-8), 0, 1)
+            
+            # Full-matrix convolution (No 64-row chunking)
+            noise = np.abs(convolve(band_norm, mask)[1:-1, 1:-1]).sum()
+            sigma_n = noise * np.sqrt(np.pi / 2) / (6 * (H - 2) * (W - 2))
             scores.append(sigma_n)
+            
         all_scores.append(scores)
         
     avg_sigma = np.mean(all_scores, axis=0)
-    clean_indices = np.argsort(avg_sigma)[:144]
-    clean_bands = np.sort([valid_bands[i] for i in clean_indices]).tolist()
-    return clean_bands
+    
+    # Adaptive threshold: Deep Learning Optimized (No division by 2.0)
+    adaptive_threshold = np.mean(avg_sigma)
+    clean_bands = [valid_bands[i] for i, sigma in enumerate(avg_sigma) if sigma < adaptive_threshold]
+    
+    print(f"Adaptive Threshold: {adaptive_threshold:.4f}")
+    print(f"Retained strictly {len(clean_bands)} ultra-clean bands out of {len(valid_bands)} valid bands.")
+    
+    return np.sort(clean_bands).tolist()
 
-print("Evaluating clean bands...")
-CLEAN_BANDS = evaluate_band_retention(train_files)
-print(f"Retained strictly {len(CLEAN_BANDS)} bands.")
+all_files = train_files + test_files
+CLEAN_BANDS = evaluate_band_retention_dynamic(all_files)
 
 class HSIPatchDataset(Dataset):
     def __init__(self, file_list, clean_bands, patch_size=11, augment=False):

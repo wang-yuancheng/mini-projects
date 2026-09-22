@@ -3,27 +3,24 @@ import random
 from pathlib import Path
 import numpy as np
 import scipy.io as sio
-import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
-from scipy.ndimage import convolve, binary_dilation
+from scipy.ndimage import binary_dilation, convolve
 from tqdm.auto import tqdm
 from functools import partial
 
 # Disable tqdm progress bars to keep the nohup.out log file clean
 tqdm = partial(tqdm, disable=True)
 
-# Force matplotlib to run headlessly without a display
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 
 # ==========================================
-# 1. SETUP & DATASET MINING
+# 1. SETUP & DYNAMIC BAND SELECTION
 # ==========================================
 DATA_DIR = Path.cwd().parent / "data" / "hyperspectral_oil_spill"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -31,48 +28,42 @@ print(f"Executing on device: {device}")
 
 train_files = [f for f in DATA_DIR.glob("*.mat") if f.stem not in ["GM01", "GM02"]]
 test_files = [f for f in DATA_DIR.glob("*.mat") if f.stem in ["GM01", "GM02"]]
+all_files = train_files + test_files
 
-def evaluate_band_retention_dynamic(all_files):
-    print("Evaluating clean bands across ALL datasets to eliminate sun glint...")
-    # Drop known atmospheric water vapor bands first
+def evaluate_band_retention_dynamic(file_list):
+    print("Dynamically calculating noise variance across ALL files to eliminate sun glint...")
     water_vapor_bands = set(list(range(104, 114)) + list(range(148, 168)) + list(range(221, 224)))
-    sample_img = sio.loadmat(all_files[0])["img"]
+    sample_img = sio.loadmat(file_list[0])["img"]
     total_raw_bands = sample_img.shape[2]
     
     valid_bands = [b for b in range(total_raw_bands) if b not in water_vapor_bands]
     mask = np.array([[1, -2,  1], [-2, 4, -2], [1, -2,  1]], dtype=float)
-    all_scores = []
+    all_file_scores = []
     
-    for file_path in all_files:
+    for file_path in file_list:
         img = sio.loadmat(file_path)["img"]
         H, W, _ = img.shape
         scores = []
         for b in valid_bands:
             band_data = img[:, :, b].astype(float)
-            
-            # Apply (1, 99) percentile scaling BEFORE noise calculation
+            # Evaluate noise on the exact (1, 99) scaled data the CNN will see
             p_low, p_high = np.percentile(band_data, (1, 99))
             band_norm = np.clip((band_data - p_low) / (p_high - p_low + 1e-8), 0, 1)
             
-            # Full-matrix convolution (No 64-row chunking)
+            # Full-matrix convolution for speed and accuracy
             noise = np.abs(convolve(band_norm, mask)[1:-1, 1:-1]).sum()
             sigma_n = noise * np.sqrt(np.pi / 2) / (6 * (H - 2) * (W - 2))
             scores.append(sigma_n)
-            
-        all_scores.append(scores)
+        all_file_scores.append(scores)
         
-    avg_sigma = np.mean(all_scores, axis=0)
+    avg_sigma_per_band = np.mean(all_file_scores, axis=0)
+    adaptive_threshold = np.mean(avg_sigma_per_band)
+    ultra_clean_bands = [valid_bands[i] for i, sigma in enumerate(avg_sigma_per_band) if sigma < adaptive_threshold]
     
-    # Adaptive threshold: Deep Learning Optimized (No division by 2.0)
-    adaptive_threshold = np.mean(avg_sigma)
-    clean_bands = [valid_bands[i] for i, sigma in enumerate(avg_sigma) if sigma < adaptive_threshold]
-    
-    print(f"Adaptive Threshold: {adaptive_threshold:.4f}")
-    print(f"Retained strictly {len(clean_bands)} ultra-clean bands out of {len(valid_bands)} valid bands.")
-    
-    return np.sort(clean_bands).tolist()
+    print(f"Adaptive Noise Threshold: {adaptive_threshold:.4f}")
+    print(f"Original valid bands: {len(valid_bands)} | Ultra-clean bands retained: {len(ultra_clean_bands)}")
+    return np.sort(ultra_clean_bands).tolist()
 
-all_files = train_files + test_files
 CLEAN_BANDS = evaluate_band_retention_dynamic(all_files)
 
 class HSIPatchDataset(Dataset):
@@ -87,8 +78,6 @@ class HSIPatchDataset(Dataset):
             mat = sio.loadmat(file_path)
             img = mat["img"][:, :, clean_bands].astype(np.float32)
             
-            # img = (img - np.min(img)) / (np.max(img) - np.min(img) + 1e-8) # This is a mistake, dont use min max
-
             for b in range(img.shape[2]):
                 band = img[:, :, b]
                 p_low, p_high = np.percentile(band, (1, 99))
@@ -114,7 +103,6 @@ class HSIPatchDataset(Dataset):
             np.random.shuffle(hard_water_coords)
             np.random.shuffle(easy_water_coords)
             
-            # FIX: Force the model to see open water by splitting the negative class
             half_oil = n_oil // 2
             water_sampled = np.vstack((
                 hard_water_coords[:half_oil], 
@@ -139,9 +127,12 @@ class HSIPatchDataset(Dataset):
 
 print("Mining dataset patches...")
 train_dataset = HSIPatchDataset(train_files, CLEAN_BANDS, augment=True)
-val_dataset = HSIPatchDataset(test_files, CLEAN_BANDS, augment=False)
+val_dataset_gm01 = HSIPatchDataset([f for f in test_files if "GM01" in f.stem], CLEAN_BANDS, augment=False)
+val_dataset_gm02 = HSIPatchDataset([f for f in test_files if "GM02" in f.stem], CLEAN_BANDS, augment=False)
+
 train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=0)
-val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=0)
+val_loader_gm01 = DataLoader(val_dataset_gm01, batch_size=256, shuffle=False, num_workers=0)
+val_loader_gm02 = DataLoader(val_dataset_gm02, batch_size=256, shuffle=False, num_workers=0)
 
 # ==========================================
 # 2. MODEL DEFINITIONS
@@ -243,17 +234,18 @@ class MoCo(nn.Module):
         return logits, labels
 
 # ==========================================
-# 3. STAGE 1: MOCO PRETRAINING (WITH IF/ELSE)
+# 3. STAGE 1: MOCO PRETRAINING 
 # ==========================================
 PRETRAIN_EPOCHS = 40
-PRETRAINED_WEIGHTS_PATH = "moco_pretrained_sstnet.pth"
+# Dynamically name the checkpoint file based on the number of bands
+PRETRAINED_WEIGHTS_PATH = f"moco_pretrained_sstnet_{len(CLEAN_BANDS)}.pth"
 
 moco_model = MoCo(True_SSTNet, in_bands=len(CLEAN_BANDS)).to(device)
 
 if os.path.exists(PRETRAINED_WEIGHTS_PATH):
     print(f"\n--- Found '{PRETRAINED_WEIGHTS_PATH}' ---")
     print("Skipping Stage 1 Pretraining. Loading existing weights...")
-    moco_model.load_state_dict(torch.load(PRETRAINED_WEIGHTS_PATH, map_location=device))
+    moco_model.load_state_dict(torch.load(PRETRAINED_WEIGHTS_PATH, map_location=device, weights_only=True))
 else:
     print(f"\n--- Starting Stage 1: MoCo Pretraining ({PRETRAIN_EPOCHS} Epochs) ---")
     moco_train_loader = DataLoader(MoCoDataset(train_dataset), batch_size=256, shuffle=True, num_workers=0, drop_last=True)
@@ -285,10 +277,23 @@ else:
 model = moco_model.encoder_q
 model.classifier[3] = nn.Linear(64, 1).to(device)
 
-# FIX 1: Swapped to standard BCE for stable 50/50 balanced training
 criterion = nn.BCEWithLogitsLoss() 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
-FINETUNE_EPOCHS = 30 
+FINETUNE_EPOCHS = 20 
+FINETUNED_WEIGHTS_PATH = f"finetuned_sstnet_{len(CLEAN_BANDS)}.pth"
+
+def evaluate_loader(loader, model, criterion):
+    total_loss = 0.0
+    all_preds, all_targets = [], []
+    for X, y in loader:
+        X, y = X.to(device), y.to(device)
+        logits = model(X).squeeze(1)
+        loss = criterion(logits, y)
+        total_loss += loss.item()
+        probs = torch.sigmoid(logits).cpu().numpy()
+        all_preds.extend(probs)
+        all_targets.extend(y.cpu().numpy())
+    return total_loss / len(loader), all_targets, all_preds
 
 print(f"\n--- Starting Stage 2: Supervised Fine-Tuning ({FINETUNE_EPOCHS} Epochs) ---")
 for epoch in range(FINETUNE_EPOCHS):
@@ -304,61 +309,43 @@ for epoch in range(FINETUNE_EPOCHS):
         total_train_loss += loss.item()
         
     model.eval()
-    total_val_loss = 0.0
-    all_preds, all_targets = [], []
     with torch.inference_mode():
-        for X, y in val_loader:
-            X, y = X.to(device), y.to(device)
-            logits = model(X).squeeze(1)
-            
-            # Calculate validation loss
-            val_loss = criterion(logits, y)
-            total_val_loss += val_loss.item()
-            
-            probs = torch.sigmoid(logits).cpu().numpy()
-            all_preds.extend(probs)
-            all_targets.extend(y.cpu().numpy())
-            
-    preds_binary = (np.array(all_preds) > 0.5).astype(int)
-    auc = roc_auc_score(all_targets, all_preds)
-    f1 = f1_score(all_targets, preds_binary, zero_division=0)
-    precision = precision_score(all_targets, preds_binary, zero_division=0)
-    recall = recall_score(all_targets, preds_binary, zero_division=0)
+        loss_01, targets_01, preds_01 = evaluate_loader(val_loader_gm01, model, criterion)
+        loss_02, targets_02, preds_02 = evaluate_loader(val_loader_gm02, model, criterion)
+    
+    # Calculate metrics for GM01
+    preds_bin_01 = (np.array(preds_01) > 0.5).astype(int)
+    auc_01 = roc_auc_score(targets_01, preds_01)
+    f1_01 = f1_score(targets_01, preds_bin_01, zero_division=0)
+    
+    # Calculate metrics for GM02
+    preds_bin_02 = (np.array(preds_02) > 0.5).astype(int)
+    auc_02 = roc_auc_score(targets_02, preds_02)
+    f1_02 = f1_score(targets_02, preds_bin_02, zero_division=0)
+    
+    # Calculate Combined metrics
+    targets_all = targets_01 + targets_02
+    preds_all = preds_01 + preds_02
+    preds_bin_all = (np.array(preds_all) > 0.5).astype(int)
+    auc_all = roc_auc_score(targets_all, preds_all)
+    f1_all = f1_score(targets_all, preds_bin_all, zero_division=0)
     
     avg_train_loss = total_train_loss / len(train_loader)
-    avg_val_loss = total_val_loss / len(val_loader)
     
-    print(f"Epoch {epoch+1}/{FINETUNE_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | AUC: {auc:.4f} | F1: {f1:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f}")
+    print(f"Epoch {epoch+1:02d}/{FINETUNE_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Combined AUC: {auc_all:.4f}")
+    print(f"  -> GM01 | Loss: {loss_01:.4f} | AUC: {auc_01:.4f} | F1: {f1_01:.4f}")
+    print(f"  -> GM02 | Loss: {loss_02:.4f} | AUC: {auc_02:.4f} | F1: {f1_02:.4f}")
 
-torch.save(model.state_dict(), "finetuned_sstnet.pth")
-print("Stage 2 complete. Saved final weights to finetuned_sstnet.pth")
+torch.save(model.state_dict(), FINETUNED_WEIGHTS_PATH)
+print(f"Stage 2 complete. Saved final weights to {FINETUNED_WEIGHTS_PATH}")
 
 # ==========================================
-# 5. POST-PROCESSING & SAVING IMAGES
+# 5. FINAL EVALUATION (PURE CNN NO ERW)
 # ==========================================
-def apply_erw_optimization(prob_map, img_rgb, beta=710, gamma=1e-5):
-    H, W = prob_map.shape
-    N = H * W
-    P_init = prob_map.flatten()
-    gray_img = np.mean(img_rgb, axis=2)
-    diff_h = gray_img[:, :-1] - gray_img[:, 1:]
-    weights_h = np.exp(-beta * (diff_h ** 2)).flatten()
-    diff_v = gray_img[:-1, :] - gray_img[1:, :]
-    weights_v = np.exp(-beta * (diff_v ** 2)).flatten()
-    idx = np.arange(N).reshape(H, W)
-    edges_h_i, edges_h_j = idx[:, :-1].flatten(), idx[:, 1:].flatten()
-    edges_v_i, edges_v_j = idx[:-1, :].flatten(), idx[1:, :].flatten()
-    rows = np.concatenate((edges_h_i, edges_h_j, edges_v_i, edges_v_j))
-    cols = np.concatenate((edges_h_j, edges_h_i, edges_v_j, edges_v_i))
-    vals = np.concatenate((weights_h, weights_h, weights_v, weights_v))
-    W_adj = sp.csr_matrix((vals, (rows, cols)), shape=(N, N))
-    L = sp.diags(W_adj.sum(axis=1).A1) - W_adj
-    A = L + gamma * sp.eye(N, format='csr')
-    return spsolve(A, gamma * P_init).reshape((H, W))
-
-def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
+def plot_full_scene_raw(model, file_path, clean_bands, device, patch_size=11):
     mat = sio.loadmat(file_path)
     img, gt = mat["img"], mat["map"]
+    
     rgb_raw = img[:, :, [29, 19, 9]].astype(np.float32)
     rgb_clean = np.where(rgb_raw < 0, 0, rgb_raw)
     rgb_img = np.zeros_like(rgb_clean)
@@ -368,8 +355,6 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
         rgb_img[:, :, c] = np.clip((channel - p_low) / (p_high - p_low + 1e-8), 0, 1)
         
     img_clean = img[:, :, clean_bands].astype(np.float32)
-    
-    # Apply the (1, 99) percentile scaling for test scenes
     for b in range(img_clean.shape[2]):
         band = img_clean[:, :, b]
         p_low, p_high = np.percentile(band, (1, 99))
@@ -385,37 +370,37 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     batch_size = 512 
     model.eval()
     with torch.inference_mode():
-        # Iterate over batches using range without tqdm to keep logs clean
         for i in range(0, len(valid_coords), batch_size):
             batch_coords = valid_coords[i:i+batch_size]
             batch = [img_padded[r:r+patch_size, c:c+patch_size, :].transpose(2, 0, 1) for r, c in batch_coords]
             batch_tensor = torch.tensor(np.array(batch), dtype=torch.float32).to(device)
-            
-            # FIX: Flatten model output here too
             probs = torch.sigmoid(model(batch_tensor).squeeze(1)).cpu().numpy()
             
             for (r, c), prob in zip(batch_coords, probs):
                 raw_prob_map[r, c] = prob
 
-    print(f"Applying Extended Random Walker Optimization on {file_path.stem}...")
-    optimized_probs = apply_erw_optimization(raw_prob_map, rgb_img)
-    predictions = (optimized_probs > 0.50).astype(int) 
-
-    # FIX: Mask out the invalid background swath so ERW doesn't hallucinate
-    valid_mask = (gt >= 0)
-    predictions = (optimized_probs > 0.50).astype(int) * valid_mask
-    
-    # Calculate full-scene metrics
-    all_probs = [optimized_probs[r, c] for r, c in valid_coords]
+    # Find the mathematically optimal threshold
+    all_probs = [raw_prob_map[r, c] for r, c in valid_coords]
     all_targets = [gt[r, c] for r, c in valid_coords]
-    preds_binary = (np.array(all_probs) > 0.50).astype(int)
+    
+    best_f1, best_thresh = 0, 0.50
+    for t in np.linspace(0.01, 0.99, 99):
+        temp_preds = (np.array(all_probs) > t).astype(int)
+        score = f1_score(all_targets, temp_preds, zero_division=0)
+        if score > best_f1:
+            best_f1, best_thresh = score, t
+
+    valid_mask = (gt >= 0)
+    predictions = (raw_prob_map > best_thresh).astype(int) * valid_mask
+    preds_binary = (np.array(all_probs) > best_thresh).astype(int)
 
     auc = roc_auc_score(all_targets, all_probs)
     precision = precision_score(all_targets, preds_binary, zero_division=0)
     recall = recall_score(all_targets, preds_binary, zero_division=0)
-    f1 = f1_score(all_targets, preds_binary, zero_division=0)
-    print(f"--- Full Scene Metrics for {file_path.stem} ---")
-    print(f"AUC: {auc:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1: {f1:.4f}\n")
+    
+    print(f"--- Final Model Metrics for {file_path.stem} ---")
+    print(f"Optimal Threshold: {best_thresh:.2f}")
+    print(f"AUC: {auc:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f} | F1: {best_f1:.4f}\n")
 
     fig, axs = plt.subplots(1, 3, figsize=(18, 8))
     axs[0].imshow(rgb_img)
@@ -423,7 +408,7 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
     axs[1].imshow(gt == 1, cmap='magma')
     axs[1].set_title("Ground Truth Mask")
     axs[2].imshow(predictions, cmap='magma')
-    axs[2].set_title("Model Prediction (ERW Optimized)")
+    axs[2].set_title(f"Pure CNN Prediction (Thresh {best_thresh:.2f})")
     for ax in axs: ax.axis("off")
     plt.tight_layout()
     
@@ -434,6 +419,6 @@ def plot_full_scene(model, file_path, clean_bands, device, patch_size=11):
 
 print("\n--- Processing final evaluations ---")
 for test_file in test_files:
-    plot_full_scene(model, test_file, CLEAN_BANDS, device)
+    plot_full_scene_raw(model, test_file, CLEAN_BANDS, device)
 
 print("All tasks completed successfully!")

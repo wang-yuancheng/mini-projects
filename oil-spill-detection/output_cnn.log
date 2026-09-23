@@ -1,0 +1,155 @@
+nohup: ignoring input
+Executing on device: cuda
+Dynamically calculating noise variance across ALL files to eliminate sun glint...
+Adaptive Noise Threshold: 0.0525
+Original valid bands: 191 | Ultra-clean bands retained: 138
+Mining dataset patches...
+
+--- Starting Stage 1: MoCo Pretraining (40 Epochs) ---
+MoCo Epoch 1/40 | Avg Contrastive Loss: 7.0258
+MoCo Epoch 2/40 | Avg Contrastive Loss: 5.4840
+MoCo Epoch 3/40 | Avg Contrastive Loss: 5.0811
+MoCo Epoch 4/40 | Avg Contrastive Loss: 4.7754
+MoCo Epoch 5/40 | Avg Contrastive Loss: 4.5128
+MoCo Epoch 6/40 | Avg Contrastive Loss: 4.2889
+MoCo Epoch 7/40 | Avg Contrastive Loss: 4.0959
+MoCo Epoch 8/40 | Avg Contrastive Loss: 3.8962
+MoCo Epoch 9/40 | Avg Contrastive Loss: 3.7029
+MoCo Epoch 10/40 | Avg Contrastive Loss: 3.5527
+MoCo Epoch 11/40 | Avg Contrastive Loss: 3.4088
+MoCo Epoch 12/40 | Avg Contrastive Loss: 3.2881
+MoCo Epoch 13/40 | Avg Contrastive Loss: 3.1884
+MoCo Epoch 14/40 | Avg Contrastive Loss: 3.1023
+MoCo Epoch 15/40 | Avg Contrastive Loss: 3.0296
+MoCo Epoch 16/40 | Avg Contrastive Loss: 2.9337
+MoCo Epoch 17/40 | Avg Contrastive Loss: 2.8188
+MoCo Epoch 18/40 | Avg Contrastive Loss: 2.7526
+MoCo Epoch 19/40 | Avg Contrastive Loss: 2.7074
+MoCo Epoch 20/40 | Avg Contrastive Loss: 2.6714
+MoCo Epoch 21/40 | Avg Contrastive Loss: 2.6425
+MoCo Epoch 22/40 | Avg Contrastive Loss: 2.6162
+MoCo Epoch 23/40 | Avg Contrastive Loss: 2.5922
+MoCo Epoch 24/40 | Avg Contrastive Loss: 2.5714
+MoCo Epoch 25/40 | Avg Contrastive Loss: 2.5334
+MoCo Epoch 26/40 | Avg Contrastive Loss: 2.5131
+MoCo Epoch 27/40 | Avg Contrastive Loss: 2.4993
+MoCo Epoch 28/40 | Avg Contrastive Loss: 2.4868
+MoCo Epoch 29/40 | Avg Contrastive Loss: 2.4784
+MoCo Epoch 30/40 | Avg Contrastive Loss: 2.4702
+MoCo Epoch 31/40 | Avg Contrastive Loss: 2.4630
+MoCo Epoch 32/40 | Avg Contrastive Loss: 2.4563
+MoCo Epoch 33/40 | Avg Contrastive Loss: 2.4515
+MoCo Epoch 34/40 | Avg Contrastive Loss: 2.4450
+MoCo Epoch 35/40 | Avg Contrastive Loss: 2.4409
+MoCo Epoch 36/40 | Avg Contrastive Loss: 2.4181
+MoCo Epoch 37/40 | Avg Contrastive Loss: 2.4070
+MoCo Epoch 38/40 | Avg Contrastive Loss: 2.4018
+MoCo Epoch 39/40 | Avg Contrastive Loss: 2.3993
+MoCo Epoch 40/40 | Avg Contrastive Loss: 2.3945
+Stage 1 complete. Saved weights to moco_pretrained_cnn_138.pth
+
+--- Starting Stage 2: Supervised Fine-Tuning (30 Epochs) ---
+Epoch 01/30 | Train Loss: 0.2474 | Combined AUC: 0.9314
+  -> GM01 | Loss: 0.2705 | AUC: 0.9594 | F1: 0.8938
+  -> GM02 | Loss: 0.8033 | AUC: 0.9141 | F1: 0.7615
+Epoch 02/30 | Train Loss: 0.2122 | Combined AUC: 0.9438
+  -> GM01 | Loss: 0.2485 | AUC: 0.9644 | F1: 0.9002
+  -> GM02 | Loss: 0.6455 | AUC: 0.9256 | F1: 0.7752
+Epoch 03/30 | Train Loss: 0.2035 | Combined AUC: 0.9516
+  -> GM01 | Loss: 0.2590 | AUC: 0.9678 | F1: 0.8988
+  -> GM02 | Loss: 0.6502 | AUC: 0.9312 | F1: 0.7858
+Epoch 04/30 | Train Loss: 0.1985 | Combined AUC: 0.9434
+  -> GM01 | Loss: 0.2808 | AUC: 0.9671 | F1: 0.8920
+  -> GM02 | Loss: 0.8638 | AUC: 0.9238 | F1: 0.7579
+Epoch 05/30 | Train Loss: 0.1949 | Combined AUC: 0.9539
+  -> GM01 | Loss: 0.2927 | AUC: 0.9684 | F1: 0.8889
+  -> GM02 | Loss: 0.7194 | AUC: 0.9313 | F1: 0.7656
+Epoch 06/30 | Train Loss: 0.1918 | Combined AUC: 0.9493
+  -> GM01 | Loss: 0.3083 | AUC: 0.9670 | F1: 0.8823
+  -> GM02 | Loss: 0.7869 | AUC: 0.9277 | F1: 0.7725
+Epoch 07/30 | Train Loss: 0.1892 | Combined AUC: 0.9536
+  -> GM01 | Loss: 0.2650 | AUC: 0.9674 | F1: 0.8967
+  -> GM02 | Loss: 0.5608 | AUC: 0.9189 | F1: 0.7866
+Epoch 08/30 | Train Loss: 0.1872 | Combined AUC: 0.9518
+  -> GM01 | Loss: 0.2957 | AUC: 0.9681 | F1: 0.8870
+  -> GM02 | Loss: 0.7506 | AUC: 0.9209 | F1: 0.7539
+Epoch 09/30 | Train Loss: 0.1855 | Combined AUC: 0.9552
+  -> GM01 | Loss: 0.3120 | AUC: 0.9670 | F1: 0.8824
+  -> GM02 | Loss: 0.6675 | AUC: 0.9314 | F1: 0.7789
+Epoch 10/30 | Train Loss: 0.1838 | Combined AUC: 0.9446
+  -> GM01 | Loss: 0.2991 | AUC: 0.9659 | F1: 0.8880
+  -> GM02 | Loss: 0.8538 | AUC: 0.9246 | F1: 0.7716
+Epoch 11/30 | Train Loss: 0.1825 | Combined AUC: 0.9523
+  -> GM01 | Loss: 0.2669 | AUC: 0.9669 | F1: 0.8958
+  -> GM02 | Loss: 0.5943 | AUC: 0.9194 | F1: 0.7852
+Epoch 12/30 | Train Loss: 0.1813 | Combined AUC: 0.9518
+  -> GM01 | Loss: 0.3003 | AUC: 0.9660 | F1: 0.8906
+  -> GM02 | Loss: 0.7212 | AUC: 0.9280 | F1: 0.7735
+Epoch 13/30 | Train Loss: 0.1803 | Combined AUC: 0.9476
+  -> GM01 | Loss: 0.2743 | AUC: 0.9664 | F1: 0.8943
+  -> GM02 | Loss: 0.7490 | AUC: 0.9302 | F1: 0.7820
+Epoch 14/30 | Train Loss: 0.1797 | Combined AUC: 0.9491
+  -> GM01 | Loss: 0.3148 | AUC: 0.9655 | F1: 0.8832
+  -> GM02 | Loss: 0.7289 | AUC: 0.9110 | F1: 0.7639
+Epoch 15/30 | Train Loss: 0.1783 | Combined AUC: 0.9511
+  -> GM01 | Loss: 0.3095 | AUC: 0.9657 | F1: 0.8843
+  -> GM02 | Loss: 0.7067 | AUC: 0.9272 | F1: 0.7863
+Epoch 16/30 | Train Loss: 0.1775 | Combined AUC: 0.9558
+  -> GM01 | Loss: 0.3207 | AUC: 0.9657 | F1: 0.8835
+  -> GM02 | Loss: 0.5749 | AUC: 0.9301 | F1: 0.8048
+Epoch 17/30 | Train Loss: 0.1770 | Combined AUC: 0.9467
+  -> GM01 | Loss: 0.2911 | AUC: 0.9660 | F1: 0.8923
+  -> GM02 | Loss: 0.7744 | AUC: 0.9181 | F1: 0.7840
+Epoch 18/30 | Train Loss: 0.1761 | Combined AUC: 0.9442
+  -> GM01 | Loss: 0.3396 | AUC: 0.9640 | F1: 0.8800
+  -> GM02 | Loss: 0.8384 | AUC: 0.8961 | F1: 0.7595
+Epoch 19/30 | Train Loss: 0.1753 | Combined AUC: 0.9465
+  -> GM01 | Loss: 0.3076 | AUC: 0.9667 | F1: 0.8877
+  -> GM02 | Loss: 0.8294 | AUC: 0.9189 | F1: 0.7811
+Epoch 20/30 | Train Loss: 0.1750 | Combined AUC: 0.9493
+  -> GM01 | Loss: 0.3157 | AUC: 0.9650 | F1: 0.8850
+  -> GM02 | Loss: 0.6862 | AUC: 0.9085 | F1: 0.7808
+Epoch 21/30 | Train Loss: 0.1740 | Combined AUC: 0.9464
+  -> GM01 | Loss: 0.3036 | AUC: 0.9641 | F1: 0.8857
+  -> GM02 | Loss: 0.6482 | AUC: 0.8938 | F1: 0.7818
+Epoch 22/30 | Train Loss: 0.1733 | Combined AUC: 0.9468
+  -> GM01 | Loss: 0.3649 | AUC: 0.9658 | F1: 0.8758
+  -> GM02 | Loss: 0.8417 | AUC: 0.8974 | F1: 0.7660
+Epoch 23/30 | Train Loss: 0.1725 | Combined AUC: 0.9437
+  -> GM01 | Loss: 0.3611 | AUC: 0.9631 | F1: 0.8775
+  -> GM02 | Loss: 0.8911 | AUC: 0.9081 | F1: 0.7739
+Epoch 24/30 | Train Loss: 0.1722 | Combined AUC: 0.9451
+  -> GM01 | Loss: 0.3797 | AUC: 0.9624 | F1: 0.8774
+  -> GM02 | Loss: 0.8962 | AUC: 0.9087 | F1: 0.7749
+Epoch 25/30 | Train Loss: 0.1717 | Combined AUC: 0.9471
+  -> GM01 | Loss: 0.3107 | AUC: 0.9666 | F1: 0.8880
+  -> GM02 | Loss: 0.7928 | AUC: 0.9072 | F1: 0.7728
+Epoch 26/30 | Train Loss: 0.1712 | Combined AUC: 0.9477
+  -> GM01 | Loss: 0.3602 | AUC: 0.9638 | F1: 0.8787
+  -> GM02 | Loss: 0.8321 | AUC: 0.9162 | F1: 0.7750
+Epoch 27/30 | Train Loss: 0.1707 | Combined AUC: 0.9457
+  -> GM01 | Loss: 0.3122 | AUC: 0.9659 | F1: 0.8893
+  -> GM02 | Loss: 0.7449 | AUC: 0.8876 | F1: 0.7724
+Epoch 28/30 | Train Loss: 0.1703 | Combined AUC: 0.9512
+  -> GM01 | Loss: 0.3206 | AUC: 0.9643 | F1: 0.8854
+  -> GM02 | Loss: 0.5874 | AUC: 0.9117 | F1: 0.7984
+Epoch 29/30 | Train Loss: 0.1700 | Combined AUC: 0.9421
+  -> GM01 | Loss: 0.3378 | AUC: 0.9639 | F1: 0.8787
+  -> GM02 | Loss: 0.6587 | AUC: 0.8657 | F1: 0.7721
+Epoch 30/30 | Train Loss: 0.1693 | Combined AUC: 0.9431
+  -> GM01 | Loss: 0.3795 | AUC: 0.9640 | F1: 0.8803
+  -> GM02 | Loss: 0.9489 | AUC: 0.8932 | F1: 0.7669
+Stage 2 complete. Saved final weights to finetuned_cnn_138.pth
+
+--- Processing final evaluations ---
+--- Final Model Metrics for GM01 ---
+Optimal Threshold: 0.98
+AUC: 0.9891 | Precision: 0.6852 | Recall: 0.7690 | F1: 0.7247
+
+Saved prediction image to prediction_GM01.png
+--- Final Model Metrics for GM02 ---
+Optimal Threshold: 0.99
+AUC: 0.9658 | Precision: 0.3020 | Recall: 0.6993 | F1: 0.4218
+
+Saved prediction image to prediction_GM02.png
+All tasks completed successfully!

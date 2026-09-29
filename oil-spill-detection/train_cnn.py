@@ -267,6 +267,7 @@ else:
     moco_train_loader = DataLoader(MoCoDataset(train_dataset), batch_size=256, shuffle=True, num_workers=0, drop_last=True)
     criterion_moco = nn.CrossEntropyLoss()
     optimizer_moco = torch.optim.AdamW(moco_model.parameters(), lr=3e-4, weight_decay=1e-4)
+    scheduler_moco = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_moco, T_max=PRETRAIN_EPOCHS, eta_min=1e-6)
 
     for epoch in range(PRETRAIN_EPOCHS):
         moco_model.train()
@@ -282,6 +283,9 @@ else:
             total_loss += loss.item()
             
         avg_loss = total_loss / len(moco_train_loader)
+
+        scheduler_moco.step()
+
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"MoCo Epoch {epoch+1:03d}/{PRETRAIN_EPOCHS} | Avg Contrastive Loss: {avg_loss:.4f}")
 
@@ -300,7 +304,9 @@ nn.init.zeros_(model.classifier.bias)
 criterion = nn.BCEWithLogitsLoss() 
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-3)
 
-FINETUNE_EPOCHS = 20
+FINETUNE_EPOCHS = 30
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=FINETUNE_EPOCHS, eta_min=1e-6)
+
 BEST_WEIGHTS_PATH = f"best_finetuned_cnn_{len(CLEAN_BANDS)}.pth"
 LAST_WEIGHTS_PATH = f"last_finetuned_cnn_{len(CLEAN_BANDS)}.pth"
 
@@ -345,7 +351,7 @@ for f in calibration_files:
 best_val_f1 = 0.0
 
 print(f"\n--- Starting Stage 2: Supervised Fine-Tuning ({FINETUNE_EPOCHS} Epochs) ---")
-print("Validation Monitor: GM03 (Evaluated via Adaptive Thresholding)\n")
+print("Validation Monitor: GM03 (No Adaptive Thresholding)\n")
 
 for epoch in range(FINETUNE_EPOCHS):
     model.train()
@@ -359,64 +365,34 @@ for epoch in range(FINETUNE_EPOCHS):
         optimizer.step()
         total_train_loss += loss.item()
         
-    avg_train_loss = total_train_loss / len(train_loader)
-        
-    # ---------------------------------------------------------
-    # DYNAMIC THRESHOLD CALIBRATION & EVALUATION
-    # ---------------------------------------------------------
+    # Evaluate strictly on GM03 using a fixed 0.5 threshold
     model.eval()
-    variances = []
-    optimal_thresholds = []
-    gm03_targets = None
-    gm03_probs = None
-    
+    val_loss = 0.0
+    all_preds, all_targets = [], []
     with torch.inference_mode():
-        for scene_name, data in calib_cache.items():
-            img_padded = data['img_padded']
-            coords = data['coords']
-            targets = data['targets']
+        for X, y in val_loader_gm03:
+            X, y = X.to(device), y.to(device)
+            logits = model(X).squeeze(1)
+            v_loss = criterion(logits, y)
+            val_loss += v_loss.item()
             
-            all_probs = []
-            batch_size = 1024
-            for i in range(0, len(coords), batch_size):
-                batch_coords = coords[i:i+batch_size]
-                batch = [img_padded[r:r+11, c:c+11, :].transpose(2, 0, 1) for r, c in batch_coords]
-                batch_tensor = torch.tensor(np.array(batch), dtype=torch.float32).to(device)
-                probs = torch.sigmoid(model(batch_tensor).squeeze(1)).cpu().numpy()
-                all_probs.extend(probs)
-                
-            all_probs = np.array(all_probs)
+            probs = torch.sigmoid(logits).cpu().numpy()
+            all_preds.extend(probs)
+            all_targets.extend(y.cpu().numpy())
             
-            if data['is_val']:
-                gm03_targets = targets
-                gm03_probs = all_probs
-                gm03_var = data['variance']
-            
-            best_f1, best_thresh = 0, 0.50
-            for t in np.linspace(0.50, 0.95, 46):
-                preds = (all_probs > t).astype(int)
-                score = f1_score(targets, preds, zero_division=0)
-                if score > best_f1:
-                    best_f1, best_thresh = score, t
-                    
-            variances.append(data['variance'])
-            optimal_thresholds.append(best_thresh)
-            
-    # Fit the threshold equation y = mx + b
-    m_calib, b_calib = np.polyfit(variances, optimal_thresholds, 1)
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
+    preds_binary = (all_preds > 0.5).astype(int)
     
-    # Calculate the adaptive threshold specifically for GM03
-    adaptive_thresh_gm03 = m_calib * gm03_var + b_calib
-    adaptive_thresh_gm03 = np.clip(adaptive_thresh_gm03, 0.50, 0.95)
+    val_auc = roc_auc_score(all_targets, all_preds)
+    val_f1 = f1_score(all_targets, preds_binary, zero_division=0)
+    val_precision = precision_score(all_targets, preds_binary, zero_division=0)
+    val_recall = recall_score(all_targets, preds_binary, zero_division=0)
     
-    # Evaluate GM03 using the calculated adaptive threshold
-    preds_binary = (gm03_probs > adaptive_thresh_gm03).astype(int)
+    avg_train_loss = total_train_loss / len(train_loader)
+    avg_val_loss = val_loss / len(val_loader_gm03)
     
-    val_auc = roc_auc_score(gm03_targets, gm03_probs)
-    val_f1 = f1_score(gm03_targets, preds_binary, zero_division=0)
-    val_precision = precision_score(gm03_targets, preds_binary, zero_division=0)
-    val_recall = recall_score(gm03_targets, preds_binary, zero_division=0)
-    
+    # Checkpointing based on strict validation F1
     is_best = val_f1 > best_val_f1
     if is_best:
         best_val_f1 = val_f1
@@ -425,9 +401,11 @@ for epoch in range(FINETUNE_EPOCHS):
     else:
         marker = ""
 
-    print(f"Epoch {epoch+1:02d} | Loss: {avg_train_loss:.4f} | "
-          f"Eq: T = {m_calib:.3f}v + {b_calib:.3f} | GM03 Thresh: {adaptive_thresh_gm03:.3f} | "
-          f"GM03 F1: {val_f1:.4f} | Prec: {val_precision:.4f} | Rec: {val_recall:.4f}{marker}")
+    scheduler.step()
+    current_lr = scheduler.get_last_lr()[0]
+
+    print(f"Epoch {epoch+1:02d}/{FINETUNE_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | "
+          f"GM03 AUC: {val_auc:.4f} | GM03 F1: {val_f1:.4f} | Prec: {val_precision:.4f} | Rec: {val_recall:.4f}{marker}")
 
 torch.save(model.state_dict(), LAST_WEIGHTS_PATH)
 print(f"\nTraining complete.")

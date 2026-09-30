@@ -254,7 +254,7 @@ class MoCo(nn.Module):
 # 3. STAGE 1: MOCO PRETRAINING (50 EPOCHS)
 # ==========================================
 PRETRAIN_EPOCHS = 50
-PRETRAINED_WEIGHTS_PATH = f"moco_v2_pretrained_cnn_{len(CLEAN_BANDS)}_50ep.pth"
+PRETRAINED_WEIGHTS_PATH = f"moco_v2_pretrained_cnn_{len(CLEAN_BANDS)}_50epcosine.pth"
 
 moco_model = MoCo(OilSpillCNN, in_bands=len(CLEAN_BANDS)).to(device)
 
@@ -286,8 +286,7 @@ else:
 
         scheduler_moco.step()
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"MoCo Epoch {epoch+1:03d}/{PRETRAIN_EPOCHS} | Avg Contrastive Loss: {avg_loss:.4f}")
+        print(f"MoCo Epoch {epoch+1:03d}/{PRETRAIN_EPOCHS} | Avg Contrastive Loss: {avg_loss:.4f}")
 
     torch.save(moco_model.state_dict(), PRETRAINED_WEIGHTS_PATH)
     print(f"Stage 1 complete. Saved weights to {PRETRAINED_WEIGHTS_PATH}")
@@ -307,8 +306,8 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-3)
 FINETUNE_EPOCHS = 30
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=FINETUNE_EPOCHS, eta_min=1e-6)
 
-BEST_WEIGHTS_PATH = f"best_finetuned_cnn_{len(CLEAN_BANDS)}.pth"
-LAST_WEIGHTS_PATH = f"last_finetuned_cnn_{len(CLEAN_BANDS)}.pth"
+BEST_WEIGHTS_PATH = f"best_finetuned_cnn_{len(CLEAN_BANDS)}_cosine.pth"
+LAST_WEIGHTS_PATH = f"last_finetuned_cnn_{len(CLEAN_BANDS)}_cosine.pth"
 
 # ---------------------------------------------------------
 # PRE-COMPUTE CALIBRATION DATA (To speed up per-epoch evaluation)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import inspect
 import math
-from typing import Callable
+from typing import Callable, Optional, List, Dict, Tuple, Any
 
 import torch
 import torch.nn.functional as F
@@ -54,12 +54,9 @@ else:
 def build_temporal_cost(q_token_idx, video_seq_length, text_seq_length, device, dtype, offset_frames=0):
     import torch
     
-    # Allocate ONLY Video x Text penalty, bypassing the Full map
     offset = torch.zeros(video_seq_length, text_seq_length, device=device, dtype=dtype)
-    
     tokens_per_frame = int(q_token_idx[0]['tokens_per_frame'])
     
-    # ADD offset_frames so the chunk calculates its true global position
     query_frames = (
         torch.arange(video_seq_length, device=device, dtype=torch.long)
         // tokens_per_frame
@@ -71,7 +68,15 @@ def build_temporal_cost(q_token_idx, video_seq_length, text_seq_length, device, 
         local = seg['local_token_idx'].to(device=device)
         midpoint = torch.tensor(seg['midpoint'], dtype=torch.float32, device=device)
 
-        d = (query_frames.float()[:, None] - midpoint).abs()
+        d = (query_frames.float()[:, None] - midpoint)
+        
+        # Apply Infinite Boundaries to prevent lighting collapse
+        if seg.get("is_first", False):
+            d[d < 0] = 0.0 
+        if seg.get("is_last", False):
+            d[d > 0] = 0.0 
+            
+        d = d.abs()
         cost = (torch.relu(d - w) ** 2) / (2 * sigma ** 2)
 
         offset[:, local] = cost.to(offset.dtype)
@@ -83,29 +88,57 @@ def build_temporal_cost(q_token_idx, video_seq_length, text_seq_length, device, 
 # Prompt Relay
 # modification-12
 # =================================================================================================================================
-def chunked_softmax_attention(q, k, v, q_token_idx, text_seq_length, chunk_size=4096, offset_frames=0):
+def chunked_softmax_attention(q, k, v, q_token_idx, text_seq_length, chunk_size=4096, offset_frames=0, prompt_spans=None):
     import torch
     import torch.nn.functional as F
 
     B, H, Lq, D = q.shape
     video_seq_length = Lq - text_seq_length
 
-    # 1. Native SDPA for Text Queries 
-    q_text = q[:, :, :text_seq_length, :]
-    out_text = F.scaled_dot_product_attention(
-        q_text, k, v, dropout_p=0.0, is_causal=False
-    )
-
-    # 2. Chunked SDPA for Video Queries
-    q_video = q[:, :, text_seq_length:, :]
-    out_video = torch.empty(B, H, video_seq_length, D, device=q.device, dtype=q.dtype)
-    
-    if q_token_idx is not None:
-        # Pass the offset parameter down
+    if q_token_idx is not None and len(q_token_idx) > 0:
         temporal_cost_map = build_temporal_cost(q_token_idx, video_seq_length, text_seq_length, q.device, q.dtype, offset_frames)
     else:
         temporal_cost_map = torch.zeros(video_seq_length, text_seq_length, device=q.device, dtype=q.dtype)
 
+    # ----------------------------------------------------------------------
+    # 1. Masked SDPA for Text Queries (The Strict Quarantine)
+    # ----------------------------------------------------------------------
+    q_text = q[:, :, :text_seq_length, :]
+    
+    mask_tt = torch.full((text_seq_length, text_seq_length), float('-inf'), device=q.device, dtype=q.dtype)
+    
+    if prompt_spans is not None and len(prompt_spans) > 0:
+        global_span = prompt_spans[0]
+        # Rule 1: Global prompt can ONLY see itself (prevents Hub-and-Spoke leak)
+        mask_tt[global_span[0]:global_span[1], global_span[0]:global_span[1]] = 0.0
+        
+        # Rule 2: Local prompts can see themselves AND the global prompt
+        for span in prompt_spans[1:]:
+            start, end = span
+            mask_tt[start:end, start:end] = 0.0 # See itself
+            mask_tt[start:end, global_span[0]:global_span[1]] = 0.0 # See Global
+    else:
+        mask_tt[:, :] = 0.0 # Fallback
+        
+    # Mask TV (Text -> Video): Transpose of Video -> Text penalty
+    mask_tv = -temporal_cost_map.transpose(0, 1)
+    
+    # Stitch Text mask: [text_seq_length, L_total]
+    mask_text_full = torch.cat([mask_tt, mask_tv], dim=-1).unsqueeze(0).unsqueeze(0)
+    
+    # Apply mask identically to Cond and Uncond batches for stable CFG math
+    mask_text_full = mask_text_full.expand(B, H, text_seq_length, Lq)
+
+    out_text = F.scaled_dot_product_attention(
+        q_text, k, v, attn_mask=mask_text_full, dropout_p=0.0, is_causal=False
+    )
+
+    # ----------------------------------------------------------------------
+    # 2. Chunked SDPA for Video Queries
+    # ----------------------------------------------------------------------
+    q_video = q[:, :, text_seq_length:, :]
+    out_video = torch.empty(B, H, video_seq_length, D, device=q.device, dtype=q.dtype)
+    
     for start in range(0, video_seq_length, chunk_size):
         end = min(start + chunk_size, video_seq_length)
         q_chunk = q_video[:, :, start:end, :]
@@ -113,21 +146,16 @@ def chunked_softmax_attention(q, k, v, q_token_idx, text_seq_length, chunk_size=
 
         # The penalty applies ONLY to Text Keys. 
         penalty_text = temporal_cost_map[start:end] 
-        mask_text = -penalty_text.unsqueeze(0).unsqueeze(0) 
+        mask_text_chunk = -penalty_text.unsqueeze(0).unsqueeze(0) 
 
-        # Apply CFG Leakage Fix 
-        if B >= 2:
-            zero_mask = torch.zeros_like(mask_text).repeat(B // 2, 1, 1, 1)
-            cond_mask = mask_text.repeat(B - (B // 2), 1, 1, 1)
-            mask_text = torch.cat([zero_mask, cond_mask], dim=0) 
-        else:
-            mask_text = mask_text.repeat(B, 1, 1, 1)
-
-        # Video Keys get Global Attention (Zero Mask) because slicing happens natively in the Latent Loop now
-        mask_video = torch.zeros(B, 1, chunk_len, video_seq_length, device=q.device, dtype=q.dtype)
+        # Video Keys get Global Attention (Zero Mask)
+        mask_video_chunk = torch.zeros(1, 1, chunk_len, video_seq_length, device=q.device, dtype=q.dtype)
 
         # Stitch the mask together
-        mask_chunk = torch.cat([mask_text, mask_video], dim=-1)
+        mask_chunk = torch.cat([mask_text_chunk, mask_video_chunk], dim=-1)
+        
+        # Apply mask identically to Cond and Uncond batches for stable CFG math
+        mask_chunk = mask_chunk.expand(B, H, chunk_len, Lq)
 
         out_chunk = F.scaled_dot_product_attention(
             q_chunk, k, v, attn_mask=mask_chunk.to(q.dtype), dropout_p=0.0, is_causal=False
@@ -135,7 +163,7 @@ def chunked_softmax_attention(q, k, v, q_token_idx, text_seq_length, chunk_size=
 
         out_video[:, :, start:end, :] = out_chunk
 
-        del mask_text, mask_video, mask_chunk, out_chunk
+        del mask_text_chunk, mask_video_chunk, mask_chunk, out_chunk
 
     return torch.cat([out_text, out_video], dim=2)
 # =================================================================================================================================
@@ -2383,8 +2411,15 @@ class CogVideoXAttnProcessor2_0:
         encoder_hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         image_rotary_emb: torch.Tensor | None = None,
-        cross_attn_q_token_idx: Optional[List[Dict[str, Any]]] = None, # <--- Prompt Relay modification-13
+        cross_attn_q_token_idx: Optional[List[Dict[str, Any]]] = None,
         offset_frames: int = 0,
+        chunk_idx: int = 0,
+        start_idx: int = 0,
+        end_idx: int = 0,
+        tokens_per_frame: int = 1350,
+        temporal_patch_scale: int = 1,
+        is_last_chunk: bool = False,
+        prompt_spans: Optional[List[Tuple[int, int]]] = None, # <--- ADD HERE
     ) -> torch.Tensor:
         text_seq_length = encoder_hidden_states.size(1)
 
@@ -2431,6 +2466,7 @@ class CogVideoXAttnProcessor2_0:
                 cross_attn_q_token_idx, 
                 text_seq_length,
                 offset_frames=offset_frames,
+                prompt_spans=prompt_spans, # <--- ADD HERE
             )
         else:
             # Standard unmasked attention

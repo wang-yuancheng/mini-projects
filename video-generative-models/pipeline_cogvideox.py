@@ -567,6 +567,32 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                 
         return q_token_idx if len(q_token_idx) > 0 else None
     # =================================================================================================================================
+
+    # =================================================================================================================================
+    # [RELAY-BLOCK-P1] Text encoding for the "block" method
+    # =================================================================================================================================
+    def _encode_relay_blocks(self, global_prompt, local_prompts, max_sequence_length, device):
+        """One complete stock prompt per event: "global + local_k", encoded exactly like a stock CogVideoX prompt
+        (content + EOS + padding = max_sequence_length tokens, T5 with no attention mask). Event k's block is the
+        whole span of that prompt. Returns ([1, K * max_sequence_length, D] embeddings, list of block spans)."""
+        blocks, spans = [], []
+        for k, lp in enumerate(local_prompts):
+            block_prompt = f"{global_prompt.strip()} {lp.strip()}".strip()
+            n_tokens = len(self.tokenizer(block_prompt, add_special_tokens=True).input_ids)
+            if n_tokens > max_sequence_length:
+                logger.warning(
+                    f"Prompt Relay (block): global + local prompt {k} = {n_tokens} tokens > {max_sequence_length}; "
+                    "the end of the local prompt is truncated."
+                )
+            emb = self._get_t5_prompt_embeds(
+                prompt=block_prompt, num_videos_per_prompt=1, max_sequence_length=max_sequence_length, device=device
+            )
+            spans.append((k * emb.shape[1], (k + 1) * emb.shape[1]))
+            blocks.append(emb)
+        return torch.cat(blocks, dim=1), spans
+    # =================================================================================================================================
+    # [RELAY-BLOCK-P1] end
+    # =================================================================================================================================
     
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
@@ -592,7 +618,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         attention_kwargs: dict[str, Any] | None = None,
         callback_on_step_end: Callable[[int, int], None] | PipelineCallback | MultiPipelineCallbacks | None = None,
         callback_on_step_end_tensor_inputs: list[str] = ["latents"],
-        max_sequence_length: int = 224,
+        max_sequence_length: int = 226,  # [RELAY-BLOCK-P2] diffusers default restored (v0 had 224)
         prompt_filepath: Optional[str] = None, # <--- Prompt Relay modification-4
         fps: int = 16, # <--- Prompt Relay modification-15.1
     ) -> CogVideoXPipelineOutput | tuple:
@@ -685,77 +711,52 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
         # =================================================================================================================================
-        # Prompt Relay
-        # modification-6
+        # [RELAY-BLOCK-P3] Prompt Relay text setup, "block" method (replaces v0 modification-6)
+        #   conditional branch: [global + event 1][global + event 2] ... each a stock 226-token T5 prompt
+        #   negative branch:    the stock 226-token "" prompt, no relay
         # =================================================================================================================================
         cross_attn_q_token_idx = None
+        relay_text_lens = None  # (negative, conditional): number of real text tokens in each CFG branch
         if prompt_filepath is not None:
             import json
-            with open(prompt_filepath, 'r') as f:
-                prompts = json.load(f)
 
-            global_prompt = prompts.get("global_prompt", "")
-            local_prompts = prompts.get("local_prompts", [])
-            time_intervals = prompts.get("time_intervals", [])
-            
-            all_prompts = [global_prompt] + local_prompts
-            
+            with open(prompt_filepath, "r") as f:
+                relay_json = json.load(f)
+            global_prompt = relay_json.get("global_prompt", "")
+            local_prompts = relay_json.get("local_prompts", [])
+            time_intervals = relay_json.get("time_intervals", [])
+            if len(local_prompts) != len(time_intervals):
+                raise ValueError("Prompt Relay: local_prompts and time_intervals must have the same length.")
+
             device = self._execution_device
-            dtype = self.text_encoder.dtype
-            prompt_embeds_list = []
-            negative_prompt_embeds_list = []
-            spans = []
-            current_idx = 0
-            neg_p = negative_prompt or ""
-            
-            # Encode each prompt dynamically and force Negative to perfectly match Positive
-            for p in all_prompts:
-                # 1. Encode Positive Chunk (always add EOS to keep T5 math stable)
-                text_inputs = self.tokenizer(
-                    p,
-                    padding="max_length",
-                    max_length=max_sequence_length, # Forces exactly 224 tokens per event
-                    truncation=True,
-                    add_special_tokens=True,
-                    return_tensors="pt",
-                )
-                pos_input_ids = text_inputs.input_ids
-                emb = self.text_encoder(pos_input_ids.to(device))[0].to(dtype=dtype)
-                prompt_embeds_list.append(emb)
-                
-                length = pos_input_ids.shape[1]
-                spans.append((current_idx, current_idx + length))
-                current_idx += length
-                
-                # 2. Encode Negative Chunk (Force exact shape match to Positive Chunk)
-                neg_inputs = self.tokenizer(
-                    neg_p,
-                    padding="max_length",
-                    max_length=length,
-                    truncation=True,
-                    add_special_tokens=True,
-                    return_tensors="pt",
-                )
-                neg_emb = self.text_encoder(neg_inputs.input_ids.to(device))[0].to(dtype=dtype)
-                negative_prompt_embeds_list.append(neg_emb)
-                
-            prompt_embeds = torch.cat(prompt_embeds_list, dim=1)
-            negative_prompt_embeds = torch.cat(negative_prompt_embeds_list, dim=1)
-            
-            # Pass boundaries to kwargs for the Attention Processor quarantine mask
-            if attention_kwargs is None:
-                attention_kwargs = {}
-            attention_kwargs["prompt_spans"] = spans
-            
-            # Clear strings to bypass default encoding pipeline
+            prompt_embeds, relay_block_spans = self._encode_relay_blocks(
+                global_prompt, local_prompts, max_sequence_length, device
+            )
+            negative_prompt_embeds = self._get_t5_prompt_embeds(
+                prompt=negative_prompt or "",
+                num_videos_per_prompt=1,
+                max_sequence_length=max_sequence_length,
+                device=device,
+            )
+            relay_text_lens = (negative_prompt_embeds.shape[1], prompt_embeds.shape[1])
+
+            # Zero-pad both to one length so they share a batch; the padding is removed again inside attention.
+            common_len = max(relay_text_lens)
+            prompt_embeds = torch.nn.functional.pad(prompt_embeds, (0, 0, 0, common_len - prompt_embeds.shape[1]))
+            negative_prompt_embeds = torch.nn.functional.pad(
+                negative_prompt_embeds, (0, 0, 0, common_len - negative_prompt_embeds.shape[1])
+            )
+
+            # Timing of each event block (v0 modification-5, unchanged)
+            cross_attn_q_token_idx = self._prepare_prompts(
+                relay_block_spans, time_intervals, num_frames, fps, height, width
+            )
+
+            # Bypass the default prompt encoding
             prompt = None
             negative_prompt = None
-
-            # Pass only the local spans (skip index 0) to interval logic
-            local_spans = spans[1:] 
-            cross_attn_q_token_idx = self._prepare_prompts(
-                local_spans, time_intervals, num_frames, fps, height, width
-            )
+        # =================================================================================================================================
+        # [RELAY-BLOCK-P3] end
         # =================================================================================================================================
 
         height = height or self.transformer.config.sample_height * self.vae_scale_factor_spatial
@@ -793,6 +794,19 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         # of the Imagen paper: https://huggingface.co/papers/2205.11487 . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
+
+        # =================================================================================================================================
+        # [RELAY-BLOCK-P4] Branch info for the attention processor, in batch order (the batch is cat([negative, conditional]))
+        # =================================================================================================================================
+        if relay_text_lens is not None:
+            negative_len, conditional_len = relay_text_lens
+            relay_branches = ([(negative_len, False)] if do_classifier_free_guidance else []) + [(conditional_len, True)]
+            attention_kwargs = dict(attention_kwargs or {})
+            attention_kwargs["relay_branches"] = relay_branches
+            self._attention_kwargs = attention_kwargs
+        # =================================================================================================================================
+        # [RELAY-BLOCK-P4] end
+        # =================================================================================================================================
 
         # 3. Encode input prompt
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
@@ -912,13 +926,22 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                         chunk_attn_kwargs = clean_attn_kwargs.copy() if clean_attn_kwargs else {}
                         chunk_attn_kwargs["offset_frames"] = start_idx // temporal_patch_scale
                         
-                        # CORRECT ROPE SLICING
-                        t_start = (start_idx // temporal_patch_scale) * tokens_per_frame
-                        t_end = (end_idx // temporal_patch_scale) * tokens_per_frame
+                        # # CORRECT ROPE SLICING (old)
+                        # t_start = (start_idx // temporal_patch_scale) * tokens_per_frame
+                        # t_end = (end_idx // temporal_patch_scale) * tokens_per_frame
+                        # chunk_rotary_emb = (
+                        #     image_rotary_emb[0][t_start:t_end],
+                        #     image_rotary_emb[1][t_start:t_end]
+                        # ) if image_rotary_emb is not None else None
+
+                        # LOCAL ROPE GENERATION (Prevents out-of-bounds extrapolation)
                         chunk_rotary_emb = (
-                            image_rotary_emb[0][t_start:t_end],
-                            image_rotary_emb[1][t_start:t_end]
-                        ) if image_rotary_emb is not None else None
+                            self._prepare_rotary_positional_embeddings(
+                                height, width, chunk_len, device
+                            )
+                            if self.transformer.config.use_rotary_positional_embeddings
+                            else None
+                        )
                         
                         with self.transformer.cache_context("cond_uncond"):
                             chunk_pred = self.transformer(

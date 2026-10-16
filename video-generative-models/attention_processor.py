@@ -56,7 +56,7 @@ else:
 # they are removed before attention, so nothing ever attends to them.
 #
 # Negative branch: plain scaled-dot-product attention over its 226 text tokens + all video tokens (stock CogVideoX maths).
-# Conditional branch, text = K event blocks, block k = stock 226-token T5 prompt "global + event k":
+# Conditional branch, text = K event blocks, block k = stock 226-token T5 prompt "event k + global":
 #   video queries -> text keys : bias_k(f) on every key of block k, where
 #                                bias_k(f) = -C_k(f) - log( sum_j exp(-C_j(f)) )        (normalised per frame)
 #                                C_k(f)    = ReLU(|f - m_k| - w_k)^2 / (2 * sigma_k^2)  (Prompt Relay penalty)

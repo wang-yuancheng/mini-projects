@@ -569,20 +569,22 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     # =================================================================================================================================
 
     # =================================================================================================================================
-    # [RELAY-BLOCK-P1] Text encoding for the "block" method
+    # [RELAY-BLOCK-P1] Text encoding for the "block" method, event text first (round 6, "B_ef")
     # =================================================================================================================================
     def _encode_relay_blocks(self, global_prompt, local_prompts, max_sequence_length, device):
-        """One complete stock prompt per event: "global + local_k", encoded exactly like a stock CogVideoX prompt
+        """One complete stock prompt per event: "local_k + global", encoded exactly like a stock CogVideoX prompt
         (content + EOS + padding = max_sequence_length tokens, T5 with no attention mask). Event k's block is the
-        whole span of that prompt. Returns ([1, K * max_sequence_length, D] embeddings, list of block spans)."""
+        whole span of that prompt. Returns ([1, K * max_sequence_length, D] embeddings, list of block spans).
+        Rounds 2-3 used "global + local_k"; with that order the first event was weak in the first 1-2 s."""
         blocks, spans = [], []
         for k, lp in enumerate(local_prompts):
-            block_prompt = f"{global_prompt.strip()} {lp.strip()}".strip()
+            block_prompt = f"{lp.strip()} {global_prompt.strip()}".strip()  # event text first, then the global prompt
             n_tokens = len(self.tokenizer(block_prompt, add_special_tokens=True).input_ids)
+            logger.warning(f"Prompt Relay block {k} ({n_tokens} tokens incl. EOS): {block_prompt!r}")
             if n_tokens > max_sequence_length:
                 logger.warning(
-                    f"Prompt Relay (block): global + local prompt {k} = {n_tokens} tokens > {max_sequence_length}; "
-                    "the end of the local prompt is truncated."
+                    f"Prompt Relay (block): local prompt {k} + global = {n_tokens} tokens > {max_sequence_length}; "
+                    "the end of the global prompt is truncated for this block."
                 )
             emb = self._get_t5_prompt_embeds(
                 prompt=block_prompt, num_videos_per_prompt=1, max_sequence_length=max_sequence_length, device=device
@@ -712,7 +714,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
 
         # =================================================================================================================================
         # [RELAY-BLOCK-P3] Prompt Relay text setup, "block" method (replaces v0 modification-6)
-        #   conditional branch: [global + event 1][global + event 2] ... each a stock 226-token T5 prompt
+        #   conditional branch: [event 1 + global][event 2 + global] ... each a stock 226-token T5 prompt
         #   negative branch:    the stock 226-token "" prompt, no relay
         # =================================================================================================================================
         cross_attn_q_token_idx = None
@@ -879,13 +881,10 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         clean_attn_kwargs.pop("window_length", None)
         clean_attn_kwargs.pop("window_stride", None)
         
-        # Calculate tokens per frame for RoPE slicing
-        p = self.transformer.config.patch_size
+        # Latent frames per temporal patch (converts a window's start latent into Prompt Relay's offset_frames)
+        # [RELAY-CLEAN-3] tokens_per_frame / h_lat / w_lat / p removed: they were only used by the old RoPE slicing
         p_t = getattr(self.transformer.config, "patch_size_t", None)
         temporal_patch_scale = p_t if p_t is not None else 1
-        h_lat = height // self.vae_scale_factor_spatial
-        w_lat = width // self.vae_scale_factor_spatial
-        tokens_per_frame = (h_lat // p) * (w_lat // p)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             old_pred_original_sample = None
@@ -926,13 +925,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
                         chunk_attn_kwargs = clean_attn_kwargs.copy() if clean_attn_kwargs else {}
                         chunk_attn_kwargs["offset_frames"] = start_idx // temporal_patch_scale
                         
-                        # # CORRECT ROPE SLICING (old)
-                        # t_start = (start_idx // temporal_patch_scale) * tokens_per_frame
-                        # t_end = (end_idx // temporal_patch_scale) * tokens_per_frame
-                        # chunk_rotary_emb = (
-                        #     image_rotary_emb[0][t_start:t_end],
-                        #     image_rotary_emb[1][t_start:t_end]
-                        # ) if image_rotary_emb is not None else None
+                        # [RELAY-CLEAN-3] commented-out old RoPE slicing removed (it was not executed)
 
                         # LOCAL ROPE GENERATION (Prevents out-of-bounds extrapolation)
                         chunk_rotary_emb = (

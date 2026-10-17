@@ -175,7 +175,6 @@ def generate_video(
             use_dynamic_cfg=True,
             guidance_scale=guidance_scale,
             generator=torch.Generator().manual_seed(seed),
-            # [RELAY-CLEAN-2] v0 modification-3.2.1 removed: the image-to-video pipeline has no prompt_filepath argument
             attention_kwargs=attention_kwargs,
         ).frames[0]
     elif generate_type == "t2v":
@@ -205,7 +204,6 @@ def generate_video(
             use_dynamic_cfg=True,
             guidance_scale=guidance_scale,
             generator=torch.Generator().manual_seed(seed),
-            # [RELAY-CLEAN-2] v0 modification-3.2.3 removed: the video-to-video pipeline has no prompt_filepath argument
             attention_kwargs=attention_kwargs,
         ).frames[0]
     export_to_video(video_generate, output_path, fps=fps)
@@ -282,9 +280,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
-
-    # [RELAY-CLEAN-1] v0 modification-2 removed: it joined the JSON prompts into --prompt, which the pipeline ignores
-    # whenever --prompt_filepath is given (the Prompt Relay text is built from the JSON inside the pipeline).
 
     generate_video(
         prompt=args.prompt,
